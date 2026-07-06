@@ -173,14 +173,25 @@ public final class EngineManager: Sendable {
             .write(to: versionDir.appendingPathComponent("version"))
 
         // Gatekeeper would block the unsigned Wine binaries if quarantined.
-        try Subprocess.run(URL(fileURLWithPath: "/usr/bin/xattr"),
-                           arguments: ["-dr", "com.apple.quarantine", versionDir.path],
-                           timeout: 300)
+        try Self.stripQuarantine(at: versionDir)
 
         // Swap point: engine/current -> <version> (relative symlink).
         try? fm.removeItem(at: paths.engineCurrent)
         try fm.createSymbolicLink(atPath: paths.engineCurrent.path,
                                   withDestinationPath: pin.version)
+    }
+
+    /// Engine-agnostic quarantine strip (spec §4.1). Ensures owner-write
+    /// first: some engine tarballs (e.g. CrossOver-derived builds) unpack
+    /// read-only, and `xattr -d` fails silently on read-only files — which
+    /// leaves Gatekeeper dialogs and dylib load failures at first launch.
+    static func stripQuarantine(at directory: URL) throws {
+        try Subprocess.run(URL(fileURLWithPath: "/bin/chmod"),
+                           arguments: ["-R", "u+w", directory.path],
+                           timeout: 300)
+        try Subprocess.run(URL(fileURLWithPath: "/usr/bin/xattr"),
+                           arguments: ["-dr", "com.apple.quarantine", directory.path],
+                           timeout: 300)
     }
 }
 

@@ -110,15 +110,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 switch outcome {
                 case .launched:
                     // Spec §9.3: surface the program in Spotlight/Launchpad.
-                    // Best-effort — never a launch blocker.
+                    // Best-effort — never a launch blocker — but MUST be
+                    // awaited: the app terminates right after this loop, and a
+                    // fire-and-forget task dies with it (observed live).
                     let fallbackIcon = Bundle.main.url(forResource: "LauncherFallback",
                                                        withExtension: "icns")
-                    Task.detached(priority: .utility) {
+                    await Task.detached(priority: .utility) {
                         let launchers = LauncherManager()
                         if !launchers.launcherExists(for: exe) {
                             _ = try? launchers.createLauncher(for: exe, fallbackIcon: fallbackIcon)
                         }
-                    }
+                    }.value
                 case .refused(let verdict):
                     self.showError(title: "Cannot run \(exe.lastPathComponent)",
                                    message: verdict.explanation, offerLog: false)

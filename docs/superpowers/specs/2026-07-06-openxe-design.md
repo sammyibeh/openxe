@@ -59,12 +59,12 @@ Shell (AppKit UI: first-run progress, settings, alerts)
 - URL: `https://github.com/Gcenx/macOS_Wine_builds/releases/download/11.0_1/wine-stable-11.0_1-osx64.tar.xz`
 - Tarball layout (verified): top level is `Wine Stable.app/`; the Unix tree is at `Contents/Resources/wine/`.
 - The release bundles shared Wine Mono 10.4.1 and Wine Gecko 2.47.4 inside the package (stated in the release notes) — Wine auto-installs them into new prefixes; no separate download.
-- **Assumption (upstream publishes no checksum):** the SHA-256 for this asset is computed by us once at pin time and hardcoded next to the pinned URL. It anchors integrity of what *we* validated, not an upstream attestation. If the maintainer ever replaces the asset in place, the checksum mismatch will (correctly) refuse the download.
+- **Assumption (upstream publishes no checksum):** the SHA-256 for this asset is computed by us once at pin time and hardcoded next to the pinned URL. Pin-time value (computed 2026-07-06 from the downloaded asset, size verified byte-exact): `b50dc50ec7f41d58b115a6b685d4d1315ba3c797bd3aa0f49213f2703cb82388`. It anchors integrity of what *we* validated, not an upstream attestation. If the maintainer ever replaces the asset in place, the checksum mismatch will (correctly) refuse the download.
 
 **Behavior:**
 
 1. `isInstalled` — `engine/current/wine/bin/wine` exists and the version marker matches.
-2. `install(progress:)` — download via `URLSession` download task with resume data persisted across failures (GitHub supports range requests); verify SHA-256 (CryptoKit); on mismatch delete and retry once, then fail. Extract with `/usr/bin/tar -xJf` into a temp directory; keep only the `Contents/Resources/wine` subtree as `engine/<version>/wine/`; strip quarantine attributes (`xattr -dr com.apple.quarantine`) so Gatekeeper does not block the unsigned Wine binaries; atomically move into place and point `current` at it.
+2. `install(progress:)` — download via `URLSession` with HTTP Range resume against a persisted partial file (survives crashes, not just graceful cancels; GitHub supports range requests); verify SHA-256 (CryptoKit); on mismatch delete and retry once, then fail. Extract with `/usr/bin/tar -xJf` into a temp directory; keep only the `Contents/Resources/wine` subtree as `engine/<version>/wine/`; strip quarantine attributes (`xattr -dr com.apple.quarantine`) so Gatekeeper does not block the unsigned Wine binaries; atomically move into place and point `current` at it.
 3. `version` — read from the version marker for display in settings.
 
 **Swappability contract:** other components resolve every Wine path through `EngineManager.binURL` / `libURL` (i.e., via `engine/current`). A future arm64 engine is a new `engine/<version>/wine/` directory plus a repointed symlink — no other component changes.

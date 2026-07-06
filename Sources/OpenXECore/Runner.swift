@@ -29,13 +29,15 @@ public final class Runner: Sendable {
     /// repeat launches near-instant.
     public func ensureWineserverWarm() {
         _ = try? Subprocess.run(paths.wineserverBinary, arguments: ["-p"],
-                                environment: environment, timeout: 60)
+                                environment: environment, timeout: 60,
+                                captureOutput: false)
     }
 
     /// Settings action: "Shut Down Windows Environment".
     public func shutdownWineserver() {
         _ = try? Subprocess.run(paths.wineserverBinary, arguments: ["-k"],
-                                environment: environment, timeout: 30)
+                                environment: environment, timeout: 30,
+                                captureOutput: false)
     }
 
     // MARK: launching

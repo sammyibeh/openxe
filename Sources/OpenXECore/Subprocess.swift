@@ -28,7 +28,8 @@ public enum Subprocess {
         environment: [String: String]? = nil,
         currentDirectory: URL? = nil,
         timeout: TimeInterval? = nil,
-        logHandle: FileHandle? = nil
+        logHandle: FileHandle? = nil,
+        captureOutput: Bool = true
     ) throws -> SubprocessResult {
         let process = Process()
         process.executableURL = executable
@@ -36,14 +37,33 @@ public enum Subprocess {
         if let environment { process.environment = environment }
         if let currentDirectory { process.currentDirectoryURL = currentDirectory }
 
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = pipe
-
-        let buffer = OutputBuffer(logHandle: logHandle)
-        pipe.fileHandleForReading.readabilityHandler = { handle in
-            let chunk = handle.availableData
-            if !chunk.isEmpty { buffer.append(chunk) }
+        // Daemonizing children (wineserver -p, Wine services) inherit the
+        // pipe's write end and keep it open long after the direct child exits,
+        // so we must never block until pipe EOF. Callers that don't need output
+        // skip the pipe entirely; capturing callers get an EOF-flag drain with
+        // a bounded grace period below.
+        var pipe: Pipe?
+        var buffer: OutputBuffer?
+        if captureOutput {
+            let p = Pipe()
+            process.standardOutput = p
+            process.standardError = p
+            let b = OutputBuffer(logHandle: logHandle)
+            p.fileHandleForReading.readabilityHandler = { handle in
+                let chunk = handle.availableData
+                if chunk.isEmpty { // EOF: all writers closed
+                    b.markEOF()
+                    handle.readabilityHandler = nil
+                } else {
+                    b.append(chunk)
+                }
+            }
+            pipe = p
+            buffer = b
+        } else {
+            let sink = logHandle ?? FileHandle.nullDevice
+            process.standardOutput = sink
+            process.standardError = sink
         }
 
         let done = DispatchSemaphore(value: 0)
@@ -55,19 +75,20 @@ public enum Subprocess {
         if done.wait(timeout: deadline) == .timedOut {
             process.terminate()
             _ = done.wait(timeout: .now() + 5)
-            pipe.fileHandleForReading.readabilityHandler = nil
+            pipe?.fileHandleForReading.readabilityHandler = nil
             throw SubprocessError.timedOut(
                 command: ([executable.lastPathComponent] + arguments).joined(separator: " "),
                 seconds: timeout ?? 0)
         }
 
-        // Drain any remaining bytes, then detach the handler.
-        if let rest = try? pipe.fileHandleForReading.readToEnd(), !rest.isEmpty {
-            buffer.append(rest)
+        // Give the handler a bounded grace period to reach EOF, then take what
+        // we have — never wait indefinitely on writers that may outlive the child.
+        if let buffer, let pipe {
+            _ = buffer.waitForEOF(timeout: 0.5)
+            pipe.fileHandleForReading.readabilityHandler = nil
         }
-        pipe.fileHandleForReading.readabilityHandler = nil
 
-        return SubprocessResult(status: process.terminationStatus, output: buffer.string)
+        return SubprocessResult(status: process.terminationStatus, output: buffer?.string ?? "")
     }
 }
 
@@ -76,6 +97,7 @@ private final class OutputBuffer: @unchecked Sendable {
     private var data = Data()
     private let lock = NSLock()
     private let logHandle: FileHandle?
+    private let eof = DispatchSemaphore(value: 0)
 
     init(logHandle: FileHandle?) { self.logHandle = logHandle }
 
@@ -84,6 +106,13 @@ private final class OutputBuffer: @unchecked Sendable {
         data.append(chunk)
         lock.unlock()
         try? logHandle?.write(contentsOf: chunk)
+    }
+
+    func markEOF() { eof.signal() }
+
+    /// True when EOF arrived within the window.
+    func waitForEOF(timeout: TimeInterval) -> Bool {
+        eof.wait(timeout: .now() + timeout) == .success
     }
 
     var string: String {

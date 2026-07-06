@@ -22,7 +22,7 @@ OpenXE is a lean, personal-use macOS app that runs Windows `.exe` productivity s
 5. Failures explain themselves: incompatible binaries are diagnosed before launch; crashes surface the Wine log.
 6. Engine is versioned and swappable: a future arm64-native Wine build drops in without touching other components.
 
-**Non-Goals** — see §9 (out of scope for v1). Notably: no gaming/DirectX stack, no multiple prefixes, no library UI, no notarization, no auto-update.
+**Non-Goals** — see §10 (out of scope for v1). Notably: no gaming/DirectX stack, no multiple prefixes, no library UI, no notarization, no auto-update. §9 records a user-directed scope addition (app icon, /Applications install, per-exe launchers).
 
 ## 3. Architecture
 
@@ -37,7 +37,7 @@ Shell (AppKit UI: first-run progress, settings, alerts)
 ```
 
 - **Code layout:** `Sources/OpenXECore` (library: EngineManager, PrefixManager, Runner, PEParser — no AppKit) and `Sources/OpenXE` (executable: Shell + app lifecycle). Tests target `OpenXECore`.
-- **Packaging:** `scripts/build-app.sh` runs `swift build -c release`, assembles `OpenXE.app` (binary + `Info.plist`), ad-hoc signs (`codesign -s -`), and registers with LaunchServices (`lsregister -f`).
+- **Packaging:** `scripts/build-app.sh` runs `swift build -c release`, assembles `OpenXE.app` (binary + `Info.plist` + generated icons, §9.1), ad-hoc signs (`codesign -s -`), installs to /Applications (§9.2), and registers the installed copy with LaunchServices (`lsregister -f`).
 - **Info.plist essentials:** `LSUIElement = true`; `CFBundleDocumentTypes` claims extension `exe` (content type `com.microsoft.windows-executable`, imported UTI declaration included) with `LSHandlerRank = Owner`; bundle ID `dev.openxe.OpenXE`; min system 14.0. OpenXE does not force itself as default handler; the build script registers the claim, and if another handler owns `.exe` the user assigns OpenXE via Finder's Get Info → Open With → Change All.
 - **Filesystem contract:**
   - `…/OpenXE/engine/<version>/wine/{bin,lib,share}` — one directory per engine version
@@ -78,7 +78,7 @@ Shell (AppKit UI: first-run progress, settings, alerts)
 **Behavior (`ensurePrefix()` — idempotent, keyed on a ready-marker file):**
 
 1. Initialize: run `wineboot --init` (via the engine's `wine`) with `WINEPREFIX` set. The bundled shared Mono/Gecko auto-install during boot.
-2. Verify Mono and Gecko: `drive_c/windows/mono/` and `drive_c/windows/system32/gecko/` must both exist and be non-empty; if either is missing, fail setup with an explicit error — do not mark the prefix ready. (".NET and embedded-browser apps work fully" is a hard requirement; a silently degraded prefix is worse than a failed setup.)
+2. Verify Mono and Gecko. The bundled builds install them as *shared* — used in place from the engine's `share/wine/{mono,gecko}` and registered into the prefix, never copied to `drive_c/windows/mono` (verified empirically on the real prefix). Checks: the prefix registry (`system.reg`) must contain the Wine Mono registration, and `drive_c/windows/system32/gecko/` must exist non-empty; if either fails, fail setup with an explicit error — do not mark the prefix ready. (".NET and embedded-browser apps work fully" is a hard requirement; a silently degraded prefix is worse than a failed setup.)
 3. Retina rendering: `wine reg add "HKCU\Software\Wine\Mac Driver" /v RetinaMode /t REG_SZ /d y /f` and `wine reg add "HKCU\Control Panel\Desktop" /v LogPixels /t REG_DWORD /d 192 /f`.
 4. Folder linking: replace `drive_c/users/<user>/{Documents,Downloads,Desktop}` (freshly created, empty) with symlinks to the Mac's real `~/Documents`, `~/Downloads`, `~/Desktop`.
 5. Write the ready marker (contains creating engine version).
@@ -111,7 +111,7 @@ Shell (AppKit UI: first-run progress, settings, alerts)
 **Responsibility:** the only component that touches AppKit. Three surfaces, nothing more:
 
 1. **First-run progress window** — "Setting up your Windows environment — one time, ~200 MB download." Determinate bar for download, indeterminate for extraction and prefix boot. Shown only when setup work is actually pending.
-2. **Settings window** (shown when the app is opened with no document): engine version display, *Open C: Drive in Finder*, *Shut Down Windows Environment*, *Reset Environment* (confirmed destructive action).
+2. **Settings window** (shown when the app is opened with no document): engine version display, *Open C: Drive in Finder*, *Shut Down Windows Environment*, *Reset Environment* (confirmed destructive action), plus *Remove Generated Launchers* (§9.3).
 3. **Error alerts** — every user-facing failure is an `NSAlert` with a plain-language explanation and, where a Wine log exists, a *Show Log* button (opens the log in Finder/Console).
 
 App lifecycle: `LSUIElement` accessory app; activates only to show a window or alert; terminates once the Runner's 15-second launch watch completes without a crash (the wine subprocess and wineserver are independent processes and keep running — `wineserver -p` persists by design). Open-file Apple Events (`application(_:open:)`) queue the exe, run setup if needed, then hand to Runner.
@@ -137,8 +137,8 @@ Steps 3–4 run at most once per environment lifetime; the steady-state path is 
 
 | Failure | Behavior |
 |---|---|
-| Engine download interrupted | Resume from persisted resume data on next attempt; progress window reflects partial completion |
-| Checksum mismatch | Delete artifact, one automatic re-download, then alert: "Downloaded engine failed verification" with retry option |
+| Engine download interrupted | HTTP-Range resume from the persisted partial file on the next attempt; progress window reflects partial completion |
+| Checksum mismatch | Delete artifact, one automatic re-download, then a loud failure alert; the next launch attempt starts setup again |
 | Rosetta 2 absent (Apple Silicon) | Alert explaining the requirement with an *Install Rosetta* button that runs `softwareupdate --install-rosetta --agree-to-license` and reports the result |
 | Incompatible binary | PEParser verdict shown pre-launch in plain language (ARM Windows, 16-bit DOS, not a Windows program) — never a silent failure |
 | Program crashes at launch (nonzero exit < 15 s) | Alert with the last 40 lines of `wine.log` summarized and a *Show Log* button |
@@ -160,7 +160,28 @@ Steps 3–4 run at most once per environment lifetime; the steady-state path is 
 4. **Wine app compatibility is inherently probabilistic.** Some productivity apps will not run under any Wine. The mitigation is honest failure: PE gating and log-bearing crash alerts, never silent death.
 5. **macOS 27 is a beta-era OS (build 26A5368g).** Wine/Rosetta behavior on it is less battle-tested than on release macOS. The integration test on this exact machine is the canary.
 
-## 9. Out of Scope (v1 — binding)
+## 9. Scope Addition — user-directed, 2026-07-06 (supersedes §10 where they conflict)
+
+Three features added after the base design was approved, in priority order.
+
+### 9.1 App icon
+`OpenXE.app` gets a proper `.icns`, generated programmatically — no external assets. `scripts/make-icon.swift` (a build-time script; its AppKit/CoreGraphics use never becomes an app dependency) renders the iconset PNGs and `iconutil` packs `Resources/OpenXE.icns`; `CFBundleIconFile` is wired in Info.plist. The script also renders `Resources/LauncherFallback.icns`, a muted gray variant used by §9.3 when icon extraction fails. `build-app.sh` regenerates both when absent and bundles them.
+
+### 9.2 Install to /Applications
+`build-app.sh` installs the signed bundle into `/Applications` (falling back to `~/Applications` when not writable), replacing any previous install, and registers with LaunchServices from the installed location. The `dist/` copy remains a build artifact only.
+
+### 9.3 Per-exe launcher apps
+When an `.exe` launches successfully through OpenXE and no launcher for it exists, OpenXE generates a lightweight launcher app so the Windows program appears in Spotlight/Launchpad like a native app.
+
+- **Location:** `/Applications/OpenXE Apps/` (fallback `~/Applications/OpenXE Apps/` when not writable).
+- **Bundle contents:** `Info.plist` + a `/bin/sh` stub executable (`exec open -b dev.openxe.OpenXE "<exe path>"`) + `AppIcon.icns`. The `.exe` is referenced by its original path, never copied. The Info.plist carries `OpenXETargetPath` (the exe's absolute path) — this key marks a bundle as OpenXE-generated and is the identity check for "already exists and points to the same path" (pointing elsewhere means regenerate).
+- **Naming:** the exe's VS_VERSIONINFO `ProductName` when present, else the filename stem; sanitized for the filesystem. Name collisions between different exes resolve by suffixing ` 2`, ` 3`, ….
+- **Icon:** new core parser `PEResources` maps RVAs through the section table and walks the resource directory (`RT_GROUP_ICON` → `RT_ICON`), takes the first icon group, picks its best entry (largest pixel size, then highest bit depth; width byte 0 = 256 px), and rebuilds a valid `.ico` in memory. Both PNG-compressed and BMP/DIB entries are carried through. ImageIO decodes the `.ico`, the needed sizes are rendered out, `iconutil` packs the `.icns`. Any failure at any stage falls back to the bundled `LauncherFallback.icns` — icon extraction is never a launch blocker.
+- **Signing/registration:** each launcher is ad-hoc signed (`codesign -s -`) and registered with LaunchServices on creation.
+- **Removal:** settings gains *Remove Generated Launchers*, which deletes only bundles carrying `OpenXETargetPath`, in both the primary and fallback locations.
+- **Testing:** unit tests over synthesized PE resource fixtures (PNG entry, DIB entry, best-entry selection, `ProductName`, no-resources); the e2e test additionally generates a launcher (into a temporary directory) from a real Wine-shipped exe and asserts bundle structure, target path, icon presence, and a valid ad-hoc signature.
+
+## 10. Out of Scope (v1 — binding)
 
 - DirectX/gaming stack (DXVK, MoltenVK tuning, game controllers)
 - Multiple prefixes / bottles

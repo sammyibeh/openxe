@@ -46,11 +46,18 @@ public final class PrefixManager: Sendable {
         }
         // Wait for background services (mono/gecko installers) to finish.
         _ = try? Subprocess.run(paths.wineserverBinary, arguments: ["-w"],
-                                environment: env, timeout: 900)
+                                environment: env, timeout: 900, captureOutput: false)
 
         // 2. Verify Mono + Gecko — hard requirement; fail loudly, never degrade.
+        //    The bundled builds install both as *shared* (used in place from the
+        //    engine's share/wine/, registered into the prefix) — so Mono is
+        //    verified via its registry registration, not drive_c/windows/mono.
         let driveC = paths.prefix.appendingPathComponent("drive_c")
-        try verifyNonEmptyDirectory(driveC.appendingPathComponent("windows/mono"), name: "Wine Mono (.NET)")
+        let systemReg = (try? String(contentsOf: paths.prefix.appendingPathComponent("system.reg"),
+                                     encoding: .utf8)) ?? ""
+        guard systemReg.contains("Wine Mono") else {
+            throw PrefixError.monoOrGeckoMissing("Wine Mono (.NET) is not registered in the prefix")
+        }
         try verifyNonEmptyDirectory(driveC.appendingPathComponent("windows/system32/gecko"), name: "Wine Gecko (embedded browser)")
 
         // 3. Retina rendering.
@@ -91,9 +98,9 @@ public final class PrefixManager: Sendable {
     public func reset() throws {
         let env = WineEnvironment.build(engineCurrent: paths.engineCurrent, prefix: paths.prefix)
         _ = try? Subprocess.run(paths.wineserverBinary, arguments: ["-k"],
-                                environment: env, timeout: 30)
+                                environment: env, timeout: 30, captureOutput: false)
         _ = try? Subprocess.run(paths.wineserverBinary, arguments: ["-w"],
-                                environment: env, timeout: 60)
+                                environment: env, timeout: 60, captureOutput: false)
         try FileManager.default.removeItem(at: paths.prefix)
     }
 

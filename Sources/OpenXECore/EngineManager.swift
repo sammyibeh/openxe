@@ -107,11 +107,38 @@ public final class EngineManager: Sendable {
     }
 
     /// The saved descriptor for an installed engine (engine/<id>/descriptor.json).
+    /// Auto-heals pre-multi-engine installs: if descriptor.json is absent but a
+    /// legacy `version` file and a `wine/bin/wine` loader exist, synthesize a
+    /// descriptor (persisting it) so an existing install is not forced through
+    /// a needless re-download and prefix rebuild.
     public func descriptor(forInstalledID id: String) -> EngineDescriptor? {
-        let url = paths.engineVersions.appendingPathComponent(id)
-            .appendingPathComponent("descriptor.json")
-        guard let data = try? Data(contentsOf: url) else { return nil }
-        return try? JSONDecoder().decode(EngineDescriptor.self, from: data)
+        let engineDir = paths.engineVersions.appendingPathComponent(id)
+        let jsonURL = engineDir.appendingPathComponent("descriptor.json")
+        if let data = try? Data(contentsOf: jsonURL),
+           let d = try? JSONDecoder().decode(EngineDescriptor.self, from: data) {
+            return d
+        }
+        // Legacy backfill: a "version" marker + a `wine` loader is the old
+        // single-engine layout. Adopt the stock catalog metadata when the
+        // version matches; otherwise synthesize a minimal descriptor.
+        let fm = FileManager.default
+        guard fm.isExecutableFile(atPath: engineDir.appendingPathComponent("wine/bin/wine").path),
+              let version = try? String(contentsOf: engineDir.appendingPathComponent("version"),
+                                        encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)
+        else { return nil }
+
+        let healed: EngineDescriptor
+        if version == EngineCatalog.stock.version {
+            healed = EngineDescriptor(id: id, displayName: EngineCatalog.stock.displayName,
+                                      version: version, url: EngineCatalog.stock.url,
+                                      sha256: EngineCatalog.stock.sha256, wineBinaryName: "wine")
+        } else {
+            healed = EngineDescriptor(id: id, displayName: version, version: version,
+                                      url: URL(string: "about:blank")!,
+                                      sha256: String(repeating: "0", count: 64), wineBinaryName: "wine")
+        }
+        if let out = try? JSONEncoder().encode(healed) { try? out.write(to: jsonURL) }
+        return healed
     }
 
     public func isInstalled(_ id: String) -> Bool {

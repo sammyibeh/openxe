@@ -1,7 +1,8 @@
 import Foundation
 
 public enum LaunchOutcome: Sendable {
-    case launched
+    /// The program launched; `pid` is the wine process, for window activation.
+    case launched(pid: Int32)
     case refused(PEVerdict)
     case crashed(exitCode: Int32, logTail: String)
 }
@@ -71,7 +72,7 @@ public final class Runner: Sendable {
             return .crashed(exitCode: process.terminationStatus, logTail: logTail())
         }
         // Still running after the watch window (or exited cleanly): launched.
-        return .launched
+        return .launched(pid: process.processIdentifier)
     }
 
     /// Run a Windows program via wine and capture its combined output.

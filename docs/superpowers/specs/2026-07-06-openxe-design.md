@@ -184,6 +184,9 @@ Three features added after the base design was approved, in priority order.
 ### 9.2 Install to /Applications
 `build-app.sh` installs the signed bundle into `/Applications` (falling back to `~/Applications` when not writable), replacing any previous install, and registers with LaunchServices from the installed location. The `dist/` copy remains a build artifact only.
 
+### 9.4 Window focus (app-scoped Accessibility)
+When a program launches, OpenXE brings its window forward. Raising another process's windows needs the macOS **Accessibility** permission, and it is requested by **OpenXE.app itself** — never a parent terminal. `WindowActivation` (Shell) checks `AXIsProcessTrusted()`; on first use, if untrusted, it prompts via `AXIsProcessTrustedWithOptions([kAXTrustedCheckOptionPrompt: true])` so the system dialog attributes to OpenXE. It **degrades gracefully**: if the permission is not (yet) granted, focus is skipped and the program still runs — Accessibility never gates launching. `Runner.launch` returns the wine pid so `WindowActivation.activate(pid:)` can raise it via `NSRunningApplication`. Must be verified through the built `.app`, not `swift run` (the latter would attribute the prompt to the terminal). Fuller native per-app identity (Dock/Cmd-Tab as the app, focus-don't-duplicate relaunch, Windows-menu → macOS menu bar) is a follow-up on this foundation.
+
 ### 9.3 Per-exe launcher apps
 When an `.exe` launches successfully through OpenXE and no launcher for it exists, OpenXE generates a lightweight launcher app so the Windows program appears in Spotlight/Launchpad like a native app.
 

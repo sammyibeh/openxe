@@ -12,6 +12,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var receivedOpenEvent = false
     private var working = false
 
+    /// Prompt for Accessibility at most once ever (spec §9.4). Persisted so we
+    /// never nag a user who has chosen not to grant it.
+    private var hasPromptedForAccessibility: Bool {
+        get { UserDefaults.standard.bool(forKey: "OpenXEDidPromptAccessibility") }
+        set { UserDefaults.standard.set(newValue, forKey: "OpenXEDidPromptAccessibility") }
+    }
+
     private var progressWindow: ProgressWindowController?
     private var settingsWindow: SettingsWindowController?
 
@@ -46,7 +53,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
-        let needsEngine = !engine.isInstalled
+        let needsEngine = !engine.isActiveInstalled
         let needsPrefix = needsEngine || !prefixManager.isReady
         if needsEngine || needsPrefix {
             runSetupThenLaunch(needsEngine: needsEngine)
@@ -67,7 +74,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Task {
             do {
                 if needsEngine {
-                    try await engine.install { update in
+                    try await engine.ensureDefaultActive { update in
                         Task { @MainActor [weak self] in self?.progressWindow?.apply(update) }
                     }
                 }
@@ -108,7 +115,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     continue
                 }
                 switch outcome {
-                case .launched:
+                case .launched(let pid):
+                    // Spec §9.4: bring the program's window forward. Requires
+                    // Accessibility, granted to OpenXE.app itself (never the
+                    // parent terminal). If untrusted, prompt at most ONCE ever
+                    // (respect a user managing these prompts), then stay silent
+                    // and skip focus — Accessibility NEVER blocks the launch.
+                    if WindowActivation.isTrusted {
+                        _ = WindowActivation.activate(pid: pid)
+                    } else if !self.hasPromptedForAccessibility {
+                        self.hasPromptedForAccessibility = true
+                        WindowActivation.ensureTrustPrompting()
+                    }
+
                     // Spec §9.3: surface the program in Spotlight/Launchpad.
                     // Best-effort — never a launch blocker — but MUST be
                     // awaited: the app terminates right after this loop, and a

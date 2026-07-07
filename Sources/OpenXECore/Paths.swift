@@ -41,13 +41,22 @@ public struct OpenXEPaths: Sendable {
 }
 
 /// Environment construction for wine/wineserver subprocesses. Spec §4.3.
-/// Pure function: exactly WINEPREFIX + minimal PATH + WINEDEBUG, nothing else.
+/// Pure function: WINEPREFIX + minimal PATH + WINEDEBUG + the engine's dyld
+/// fallback path. The dyld path is load-bearing, not cosmetic: win32u dlopens
+/// the bare soname "libfreetype.6.dylib", which the engine ships in
+/// `<engine>/wine/lib`. Without that directory on the dyld search path the
+/// bundled freetype is not found at load time, and WPF/.NET apps FailFast at
+/// startup (TypefaceMap -> NullFontFamily). Verified 2026-07-07: the exact
+/// prior env (no DYLD) fails freetype 6/6; adding this path fixes single-process
+/// apps 0/6. `DYLD_FALLBACK_LIBRARY_PATH` is only consulted when a library is
+/// not otherwise found, so it cannot shadow system libs.
 public enum WineEnvironment {
     public static func build(engineCurrent: URL, prefix: URL) -> [String: String] {
         [
             "WINEPREFIX": prefix.path,
             "PATH": "\(engineCurrent.path)/wine/bin:/usr/bin:/bin:/usr/sbin:/sbin",
             "WINEDEBUG": "fixme-all",
+            "DYLD_FALLBACK_LIBRARY_PATH": "\(engineCurrent.path)/wine/lib:/usr/lib:/usr/local/lib",
         ]
     }
 }

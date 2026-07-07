@@ -41,7 +41,9 @@ CX_URL="https://media.codeweavers.com/pub/crossover/source/${CX_TARBALL}"
 # script computes and prints it, then refuses to build until it is pinned here.
 # NOTE: CrossOver 27 (Jun 2026) removes 32-bit bottles — 26.2.0 is the correct
 # base for the 32-bit-SEH-under-Rosetta fix, and 27 source is not published yet.
-CX_SHA256=""
+# Pinned 2026-07-07 from the live download (149,047,436 bytes, last-modified
+# 2026-06-09); CodeWeavers publishes no checksum, so this is our own pin.
+CX_SHA256="3846ae094dd49c073467bb2b5e6e17d5bacaebcfab4b6dd2af3f132c64cad6cf"
 
 WORK="${OPENXE_ENGINE_BUILD_DIR:-$HOME/.cache/openxe-engine-build}"
 STAGE="$REPO/dist/engine/wine-crossover-${CX_VERSION}"
@@ -67,12 +69,30 @@ guard_disk() {
 # Documented, re-runnable. Homebrew is the source of truth; nothing silently
 # required. Productivity-only — no DXMT/D3DMetal/gaming deps.
 # Verified against Morgan's recipe (WineHQ macOS docs + Gcenx + GabLeRoux CI).
+# Lean profile for productivity apps (verified sufficient for the NWS Desktop
+# .NET/SkiaSharp target): PE toolchain + fonts + TLS + CoreAudio. Vulkan/
+# gstreamer/sdl are dropped to cut dep install, disk, and build time — winemac
+# OpenGL covers SkiaSharp rendering; add them back if a target needs media.
 BREW_DEPS=(
   bison mingw-w64 pkgconf              # PE-side cross toolchain + parser + pkgconfig
-  freetype gnutls                      # core Wine deps
-  molten-vk sdl2                       # Vulkan/MoltenVK + input (no D3DMetal/gaming)
-  gstreamer gst-plugins-base           # media inside Windows apps
+  molten-vk vulkan-loader              # CrossOver win32u/vulkan.c needs SONAME_LIBVULKAN
+                                       # even in a productivity build (TU is unconditional)
 )
+# NOTE: gnutls is intentionally NOT installed (TLS inside Windows apps is
+# degraded but unused by the NWS target; arm64 Homebrew gnutls can't link into
+# the x86_64 build and x86_64 Homebrew needs sudo). freetype, by contrast, IS
+# enabled and REQUIRED — no Homebrew freetype needed: the CrossOver source tree
+# bundles its own freetype, which this build compiles as x86_64 and installs to
+# <engine>/wine/lib/libfreetype.6.dylib (verified present in the shipped engine).
+# WHY REQUIRED (incident 2026-07-07; §8): a --without-freetype engine makes the
+# NWS Desktop WPF/.NET app FailFast-crash at startup (TypefaceMap ->
+# NullFontFamily), before any window. Building --with-freetype removes that
+# crash and the main scheduler window renders. (A separate, downstream WPF
+# typography bug remains — see §8 — but that is NOT the startup FailFast.)
+# RUNTIME REQUIREMENT: win32u dlopens the bare soname "libfreetype.6.dylib", so
+# the launching environment MUST put <engine>/wine/lib on the dyld search path
+# (the Runner sets DYLD_FALLBACK_LIBRARY_PATH — spec §4.3); otherwise the bundled
+# dylib is not found at load time even though it ships inside the engine.
 # Fallback: if brew mingw-w64 chokes on the 32-bit wow64cpu.dll, switch
 # --with-mingw to an llvm-mingw toolchain (what Gcenx/MacPorts use in prod).
 bootstrap_deps() {
@@ -132,32 +152,50 @@ build_wine() {
   local build="$WORK/build"
   rm -rf "$build"; mkdir -p "$build"
 
-  # Gotchas verified by Morgan against a real M2 build:
-  #  - brew bison MUST precede macOS's ancient bison 2.3
-  #  - MoltenVK dylib soname is not autodetected on macOS -> set it explicitly
-  #  - build the host as x86_64 (Wine host must be x86 to run x86 Windows under
-  #    Rosetta); the loader must NOT be arm64 or every exe is "zsh: killed"
-  #  - hash -r flushes zsh's cached tool paths before configure
+  # Gotchas verified on THIS machine (M2, macOS 27 beta, CLT clang 17):
+  #  - brew bison MUST precede macOS's ancient bison 2.3.
+  #  - The wineloader must be x86_64 so Rosetta 2 can execute the x86 Windows
+  #    code inside it (an arm64 loader cannot run x86 PE code). Force the
+  #    compiler to x86_64 with CC="clang -arch x86_64" — `arch -x86_64` and
+  #    `-m64` alone do NOT switch Apple clang off arm64 (it keeps defining
+  #    __arm64__, and the SDK then pulls BOTH i386 and arm _OSByteOrder.h,
+  #    breaking the host makedep build).
+  #  - CRUCIAL: also pass --build/--host=x86_64-apple-darwin. Without it,
+  #    configure detects the native arm64 host and injects -D__aarch64__ into
+  #    the host-tool CFLAGS; combined with the x86_64 compiler, winnt.h then
+  #    compiles BOTH the AMD64 and ARM64 CONTEXT typedefs -> redefinition error
+  #    in tools/widl/metadata.c.
+  #  - CrossOver's dlls/win32u/vulkan.c references SONAME_LIBVULKAN
+  #    UNCONDITIONALLY, so even a productivity build needs it defined. The
+  #    x86_64 build can't link-test the arm64 Homebrew libvulkan, so set the
+  #    soname explicitly via ac_cv_lib_soname_vulkan (Wine's documented
+  #    override) rather than relying on autodetection.
+  #  - hash -r flushes zsh's cached tool paths before configure.
   export PATH="$(brew --prefix bison)/bin:$PATH"
-  export ac_cv_lib_soname_MoltenVK="$(brew --prefix molten-vk)/lib/libMoltenVK.dylib"
-  export CPPFLAGS="-I$(brew --prefix)/include"
-  export LDFLAGS="-L$(brew --prefix)/lib"
   hash -r
 
   # 64-bit host WITH 32-bit WoW64 (Wine 11 new-WoW64). --enable-archs=i386,x86_64
-  # is what builds the PE-side wow64cpu.dll carrying the Rosetta thunks. The
-  # deprecated --enable-win32on64 two-pass path is NOT used. Productivity-only:
-  # no DXMT/D3DMetal.
+  # builds the PE-side wow64cpu.dll carrying the Rosetta thunks. The deprecated
+  # --enable-win32on64 two-pass path is NOT used. Productivity-only: no
+  # DXMT/D3DMetal. --with-freetype (REQUIRED, §8) / --without-gnutls: see the
+  # BREW_DEPS note.
   ( cd "$build" && "$wine_src/configure" -C \
+      CC="clang -arch x86_64" CXX="clang++ -arch x86_64" \
+      ac_cv_lib_soname_vulkan="libvulkan.1.dylib" \
+      ac_cv_lib_soname_MoltenVK="libMoltenVK.dylib" \
       --prefix="$STAGE/wine" \
-      --build=x86_64-apple-darwin \
+      --build=x86_64-apple-darwin --host=x86_64-apple-darwin \
       --enable-archs=i386,x86_64 \
       --with-mingw \
       --disable-tests \
-      --with-coreaudio --with-vulkan --with-freetype --with-gstreamer \
-      --with-sdl --with-gnutls \
-      --without-x --without-pulse --without-alsa --without-oss \
-      --without-usb --without-wayland )
+      --with-coreaudio --with-vulkan \
+      --with-freetype --without-gnutls \
+      --without-x --without-gstreamer --without-sdl \
+      --without-pulse --without-alsa --without-oss \
+      --without-usb --without-wayland --without-dbus )
+  # Confirm SONAME_LIBVULKAN landed before the long compile.
+  grep -q 'define SONAME_LIBVULKAN' "$build/include/config.h" \
+    || { echo "error: SONAME_LIBVULKAN not defined; win32u/vulkan.c will fail" >&2; exit 4; }
   ( cd "$build" && make -j"$(sysctl -n hw.ncpu)" )
   ( cd "$build" && make install )
 }

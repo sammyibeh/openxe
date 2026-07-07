@@ -6,13 +6,24 @@ final class EnvironmentTests: XCTestCase {
     let engineCurrent = URL(fileURLWithPath: "/Users/x/Library/Application Support/OpenXE/engine/current")
     let prefix = URL(fileURLWithPath: "/Users/x/Library/Application Support/OpenXE/prefix")
 
-    func testEnvironmentIsExactlyTheSpeccedTriple() {
+    func testEnvironmentIsExactlyTheSpeccedSet() {
         let env = WineEnvironment.build(engineCurrent: engineCurrent, prefix: prefix)
         XCTAssertEqual(env, [
             "WINEPREFIX": "/Users/x/Library/Application Support/OpenXE/prefix",
             "PATH": "/Users/x/Library/Application Support/OpenXE/engine/current/wine/bin:/usr/bin:/bin:/usr/sbin:/sbin",
             "WINEDEBUG": "fixme-all",
+            "DYLD_FALLBACK_LIBRARY_PATH": "/Users/x/Library/Application Support/OpenXE/engine/current/wine/lib:/usr/lib:/usr/local/lib",
         ])
+    }
+
+    func testEnvironmentExposesEngineLibForBundledFreetype() {
+        // Regression guard for the 2026-07-07 font incident: the engine ships
+        // libfreetype.6.dylib in wine/lib and win32u dlopens it by bare soname,
+        // so wine/lib MUST be on the dyld fallback path or WPF apps FailFast.
+        let env = WineEnvironment.build(engineCurrent: engineCurrent, prefix: prefix)
+        let dyld = env["DYLD_FALLBACK_LIBRARY_PATH"] ?? ""
+        XCTAssertTrue(dyld.hasPrefix(engineCurrent.appendingPathComponent("wine/lib").path + ":"),
+                      "engine wine/lib must lead the dyld fallback path; got \(dyld)")
     }
 
     func testWineBinaryPathResolvesUnderEngineCurrent() {

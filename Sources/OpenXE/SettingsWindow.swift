@@ -12,6 +12,8 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
     private let paths: OpenXEPaths
     private let onClose: () -> Void
     private let statusLabel = NSTextField(labelWithString: "")
+    private let enginePopup = NSPopUpButton(frame: .zero, pullsDown: false)
+    private var installedEngineIDs: [String] = []
 
     init(engine: EngineManager, prefixManager: PrefixManager, runner: Runner,
          paths: OpenXEPaths, onClose: @escaping () -> Void) {
@@ -29,14 +31,29 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         window.isReleasedWhenClosed = false
         window.delegate = self
 
-        let versionText = engine.installedVersion.map { "Engine: \($0)" }
-            ?? "Engine: not installed (downloads on first .exe launch)"
-        let versionLabel = NSTextField(labelWithString: versionText)
-        versionLabel.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
-        versionLabel.textColor = .secondaryLabelColor
-
         statusLabel.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
         statusLabel.textColor = .secondaryLabelColor
+
+        // Engine picker (spec §4.1). Global active-engine setting: OpenXE keeps
+        // ONE prefix, and a prefix is bound to its engine, so the engine is a
+        // whole-environment choice, not per-app. Switching rebuilds the prefix.
+        let engineLabel = NSTextField(labelWithString: "Windows engine:")
+        engineLabel.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        engineLabel.textColor = .secondaryLabelColor
+        installedEngineIDs = engine.installedEngineIDs()
+        for id in installedEngineIDs {
+            let d = engine.descriptor(forInstalledID: id)
+            enginePopup.addItem(withTitle: d?.displayName ?? id)
+        }
+        if installedEngineIDs.isEmpty {
+            enginePopup.addItem(withTitle: "Not installed (downloads on first launch)")
+            enginePopup.isEnabled = false
+        } else if let active = engine.activeEngineID,
+                  let idx = installedEngineIDs.firstIndex(of: active) {
+            enginePopup.selectItem(at: idx)
+        }
+        enginePopup.target = self
+        enginePopup.action = #selector(engineSelected)
 
         let openC = button("Open C: Drive in Finder", #selector(openCDrive))
         openC.isEnabled = prefixManager.isReady
@@ -45,7 +62,8 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         reset.isEnabled = prefixManager.isReady
         let removeLaunchers = button("Remove Generated Launchers", #selector(removeGeneratedLaunchers))
 
-        let stack = NSStackView(views: [versionLabel, openC, shutdown, reset, removeLaunchers, statusLabel])
+        let stack = NSStackView(views: [engineLabel, enginePopup, openC, shutdown,
+                                        reset, removeLaunchers, statusLabel])
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 10
@@ -78,6 +96,27 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         Task {
             await Task.detached { runner.shutdownWineserver() }.value
             self.statusLabel.stringValue = "Windows environment shut down."
+        }
+    }
+
+    @objc private func engineSelected() {
+        let idx = enginePopup.indexOfSelectedItem
+        guard idx >= 0, idx < installedEngineIDs.count else { return }
+        let id = installedEngineIDs[idx]
+        do {
+            let changed = try engine.setActive(id)
+            if changed {
+                // A prefix is bound to its engine; invalidate it so the next
+                // launch rebuilds cleanly on the newly selected engine.
+                runner.shutdownWineserver()
+                try? prefixManager.reset()
+                statusLabel.stringValue =
+                    "Engine switched. The Windows environment will rebuild on the next launch."
+            } else {
+                statusLabel.stringValue = "That engine is already active."
+            }
+        } catch {
+            statusLabel.stringValue = "Could not switch engine: \(error.localizedDescription)"
         }
     }
 

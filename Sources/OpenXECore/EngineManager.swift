@@ -1,19 +1,47 @@
 import Foundation
 import CryptoKit
 
-/// The pinned Wine engine. Verified against the live GitHub release on
-/// 2026-07-06 (spec §4.1). The SHA-256 was computed by us at pin time —
-/// upstream publishes no checksum.
-public struct EnginePin: Sendable {
-    public let version: String
-    public let url: URL
-    public let sha256: String
+/// A Wine engine OpenXE can install and run. Spec §4.1. The download source
+/// (URL + checksum) and the wine loader binary name are parameters, not
+/// hardcoded — so a self-built Wine-Crossover engine drops in beside the
+/// stock Gcenx build behind the same `engine/current` contract.
+public struct EngineDescriptor: Sendable, Equatable, Codable {
+    public let id: String              // stable dir name, e.g. "gcenx-stable-11.0_1"
+    public let displayName: String     // shown in settings
+    public let version: String         // human version string
+    public let url: URL                // download source
+    public let sha256: String          // expected archive checksum
+    public let wineBinaryName: String  // "wine" (new-wow64 Gcenx) or "wine64" (older CrossOver)
 
-    public static let current = EnginePin(
+    public init(id: String, displayName: String, version: String,
+                url: URL, sha256: String, wineBinaryName: String) {
+        self.id = id
+        self.displayName = displayName
+        self.version = version
+        self.url = url
+        self.sha256 = sha256
+        self.wineBinaryName = wineBinaryName
+    }
+}
+
+/// Known-good engines. The stock Gcenx build is the only trusted default;
+/// other engines (e.g. a self-built Wine-Crossover) are installed explicitly
+/// and never shipped as the default from an unofficial mirror. Spec §4.1, §8.
+public enum EngineCatalog {
+    /// Pinned Gcenx Wine 11.0 stable — verified against the live release
+    /// 2026-07-06 (checksum computed by us at pin time; upstream publishes none).
+    public static let stock = EngineDescriptor(
+        id: "gcenx-stable-11.0_1",
+        displayName: "Wine 11.0 (Gcenx stable)",
         version: "wine-stable-11.0_1",
         url: URL(string: "https://github.com/Gcenx/macOS_Wine_builds/releases/download/11.0_1/wine-stable-11.0_1-osx64.tar.xz")!,
-        sha256: "b50dc50ec7f41d58b115a6b685d4d1315ba3c797bd3aa0f49213f2703cb82388"
-    )
+        sha256: "b50dc50ec7f41d58b115a6b685d4d1315ba3c797bd3aa0f49213f2703cb82388",
+        wineBinaryName: "wine")
+
+    /// The engine installed and activated on first run.
+    public static let `default` = stock
+
+    public static let builtIn: [EngineDescriptor] = [stock]
 }
 
 public enum EngineProgress: Sendable {
@@ -26,6 +54,7 @@ public enum EngineError: Error, LocalizedError {
     case downloadFailed(String)
     case checksumMismatch(expected: String, actual: String)
     case layoutUnexpected(String)
+    case notInstalled(String)
 
     public var errorDescription: String? {
         switch self {
@@ -35,6 +64,8 @@ public enum EngineError: Error, LocalizedError {
             return "Downloaded engine failed verification (expected \(expected.prefix(12))…, got \(actual.prefix(12))…)"
         case .layoutUnexpected(let detail):
             return "Engine archive layout unexpected: \(detail)"
+        case .notInstalled(let id):
+            return "Engine '\(id)' is not installed"
         }
     }
 }
@@ -52,62 +83,153 @@ public enum FileHasher {
     }
 }
 
-/// Owns engine/ exclusively: acquire, verify, install, report. Spec §4.1.
-/// Other components reach Wine only through engine/current (the swap point).
+/// Owns engine/ exclusively: acquire, verify, install multiple engines, and
+/// select the active one. Spec §4.1. Other components reach Wine only through
+/// `engine/current` (the swap point) resolved via `activeWineBinary`.
 public final class EngineManager: Sendable {
     private let paths: OpenXEPaths
-    private let pin: EnginePin
 
-    public init(paths: OpenXEPaths, pin: EnginePin = .current) {
+    public init(paths: OpenXEPaths) {
         self.paths = paths
-        self.pin = pin
     }
 
-    /// engine/current/wine/bin/wine exists and the version marker matches the pin.
-    public var isInstalled: Bool {
-        FileManager.default.isExecutableFile(atPath: paths.wineBinary.path)
-            && installedVersion == pin.version
+    // MARK: installed-engine inventory
+
+    /// IDs of every fully installed engine (has a wine root and descriptor).
+    public func installedEngineIDs() -> [String] {
+        let fm = FileManager.default
+        let entries = (try? fm.contentsOfDirectory(at: paths.engineVersions,
+                                                   includingPropertiesForKeys: nil)) ?? []
+        return entries.compactMap { dir -> String? in
+            guard dir.hasDirectoryPath, dir.lastPathComponent != "current" else { return nil }
+            return descriptor(forInstalledID: dir.lastPathComponent) != nil ? dir.lastPathComponent : nil
+        }.sorted()
     }
 
-    /// Contents of engine/current/version, for settings display.
-    public var installedVersion: String? {
-        try? String(contentsOf: paths.engineCurrent.appendingPathComponent("version"),
-                    encoding: .utf8)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+    /// The saved descriptor for an installed engine (engine/<id>/descriptor.json).
+    public func descriptor(forInstalledID id: String) -> EngineDescriptor? {
+        let url = paths.engineVersions.appendingPathComponent(id)
+            .appendingPathComponent("descriptor.json")
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        return try? JSONDecoder().decode(EngineDescriptor.self, from: data)
     }
+
+    public func isInstalled(_ id: String) -> Bool {
+        guard let d = descriptor(forInstalledID: id) else { return false }
+        let wine = paths.engineVersions.appendingPathComponent(id)
+            .appendingPathComponent("wine/bin/\(d.wineBinaryName)")
+        return FileManager.default.isExecutableFile(atPath: wine.path)
+    }
+
+    // MARK: active engine
+
+    /// The active engine id = the target of the engine/current symlink.
+    public var activeEngineID: String? {
+        try? FileManager.default.destinationOfSymbolicLink(atPath: paths.engineCurrent.path)
+    }
+
+    public var activeDescriptor: EngineDescriptor? {
+        activeEngineID.flatMap { descriptor(forInstalledID: $0) }
+    }
+
+    /// True when the active symlink resolves to a runnable engine.
+    public var isActiveInstalled: Bool {
+        guard let id = activeEngineID else { return false }
+        return isInstalled(id)
+    }
+
+    /// For settings display.
+    public var installedVersion: String? { activeDescriptor?.version }
+
+    /// The active engine's wine loader (name varies per engine). Runner and
+    /// PrefixManager spawn Wine through this.
+    public var activeWineBinary: URL {
+        let name = activeDescriptor?.wineBinaryName ?? "wine"
+        return paths.engineCurrent.appendingPathComponent("wine/bin/\(name)")
+    }
+
+    /// wineserver is named consistently across the engines we support.
+    public var activeWineserverBinary: URL {
+        paths.engineCurrent.appendingPathComponent("wine/bin/wineserver")
+    }
+
+    /// Point engine/current at an installed engine. Returns true when the
+    /// active engine actually changed — the caller must then rebuild the
+    /// prefix, because a Wine prefix is bound to its engine and Wine does not
+    /// support prefix downgrades (spec §4.1, §4.2).
+    @discardableResult
+    public func setActive(_ id: String) throws -> Bool {
+        guard isInstalled(id) else { throw EngineError.notInstalled(id) }
+        let previous = activeEngineID
+        guard previous != id else { return false }
+        let fm = FileManager.default
+        try? fm.removeItem(at: paths.engineCurrent)
+        try fm.createSymbolicLink(atPath: paths.engineCurrent.path, withDestinationPath: id)
+        return true
+    }
+
+    // MARK: install
 
     /// Download (HTTP-range resumable) → verify SHA-256 (one automatic
-    /// re-download on mismatch) → extract → strip quarantine → swap in.
-    public func install(progress: @escaping @Sendable (EngineProgress) -> Void) async throws {
+    /// re-download on mismatch) → extract → strip quarantine → record
+    /// descriptor. Does NOT activate; call `setActive` for that. If this is
+    /// the first engine installed, it is auto-activated as a convenience.
+    public func install(_ descriptor: EngineDescriptor,
+                        progress: @escaping @Sendable (EngineProgress) -> Void) async throws {
         let fm = FileManager.default
         try fm.createDirectory(at: paths.engineVersions, withIntermediateDirectories: true)
-        let partial = paths.engineVersions.appendingPathComponent("download.partial")
+        let partial = paths.engineVersions.appendingPathComponent("download-\(descriptor.id).partial")
 
         var lastError: EngineError?
         for _ in 0..<2 { // one automatic retry on checksum mismatch (spec §6)
-            try await download(to: partial, progress: progress)
+            try await download(descriptor, to: partial, progress: progress)
             progress(.verifying)
             let actual = try FileHasher.sha256Hex(of: partial)
-            if actual == pin.sha256 {
+            if actual == descriptor.sha256 {
                 progress(.extracting)
-                try extractAndSwapIn(archive: partial)
+                try extractAndInstall(descriptor, archive: partial)
                 try? fm.removeItem(at: partial)
+                if activeEngineID == nil { try setActive(descriptor.id) }
                 return
             }
-            lastError = .checksumMismatch(expected: pin.sha256, actual: actual)
+            lastError = .checksumMismatch(expected: descriptor.sha256, actual: actual)
             try? fm.removeItem(at: partial) // poisoned artifact; start clean
         }
         throw lastError ?? EngineError.downloadFailed("unknown")
     }
 
+    /// Install a pre-downloaded engine archive (used by the from-source build
+    /// path and by tests, avoiding a network round-trip). Verifies the
+    /// checksum, extracts, records the descriptor. Does not activate unless
+    /// it is the first engine.
+    public func installLocalArchive(_ descriptor: EngineDescriptor, archive: URL) throws {
+        let actual = try FileHasher.sha256Hex(of: archive)
+        guard actual == descriptor.sha256 else {
+            throw EngineError.checksumMismatch(expected: descriptor.sha256, actual: actual)
+        }
+        try extractAndInstall(descriptor, archive: archive)
+        if activeEngineID == nil { try setActive(descriptor.id) }
+    }
+
+    /// Convenience for the first-run/launch path: ensure the default engine is
+    /// installed and active.
+    public func ensureDefaultActive(progress: @escaping @Sendable (EngineProgress) -> Void) async throws {
+        if isActiveInstalled { return }
+        let def = EngineCatalog.default
+        if !isInstalled(def.id) {
+            try await install(def, progress: progress)
+        }
+        try setActive(def.id)
+    }
+
     // MARK: download
 
-    private func download(to partial: URL,
+    private func download(_ descriptor: EngineDescriptor, to partial: URL,
                           progress: @escaping @Sendable (EngineProgress) -> Void) async throws {
         let fm = FileManager.default
         let existing = (try? fm.attributesOfItem(atPath: partial.path)[.size] as? Int64).flatMap { $0 } ?? 0
 
-        var request = URLRequest(url: pin.url)
+        var request = URLRequest(url: descriptor.url)
         if existing > 0 {
             request.setValue("bytes=\(existing)-", forHTTPHeaderField: "Range")
         }
@@ -139,46 +261,66 @@ public final class EngineManager: Sendable {
         }
     }
 
-    // MARK: extract + swap
+    // MARK: extract + record
 
-    private func extractAndSwapIn(archive: URL) throws {
+    private func extractAndInstall(_ descriptor: EngineDescriptor, archive: URL) throws {
         let fm = FileManager.default
         let staging = paths.engineVersions.appendingPathComponent("staging-\(UUID().uuidString)")
         try fm.createDirectory(at: staging, withIntermediateDirectories: true)
         defer { try? fm.removeItem(at: staging) }
 
+        // `tar -xf` auto-detects xz/gz — engine-agnostic archive format.
         let untar = try Subprocess.run(
             URL(fileURLWithPath: "/usr/bin/tar"),
-            arguments: ["-xJf", archive.path, "-C", staging.path],
+            arguments: ["-xf", archive.path, "-C", staging.path],
             timeout: 900)
         guard untar.status == 0 else {
             throw EngineError.layoutUnexpected("tar exited \(untar.status): \(untar.output.suffix(300))")
         }
 
-        // Verified layout: <Something>.app/Contents/Resources/wine/{bin,lib,share}.
-        // Search one level deep so stable/devel/staging naming all work.
-        guard let appDir = try fm.contentsOfDirectory(at: staging, includingPropertiesForKeys: nil)
-            .first(where: { $0.pathExtension == "app" }),
-            fm.fileExists(atPath: appDir.appendingPathComponent("Contents/Resources/wine/bin/wine").path)
-        else {
-            throw EngineError.layoutUnexpected("no *.app/Contents/Resources/wine/bin/wine in archive")
+        // Engine-agnostic layout discovery: find the directory containing
+        // bin/<wineBinaryName>. Handles Gcenx (*.app/Contents/Resources/wine)
+        // and CrossOver-style (top-level dir) archives alike.
+        guard let wineRoot = Self.findWineRoot(in: staging, binaryName: descriptor.wineBinaryName) else {
+            throw EngineError.layoutUnexpected(
+                "no directory containing bin/\(descriptor.wineBinaryName) found in archive")
         }
-        let wineTree = appDir.appendingPathComponent("Contents/Resources/wine")
 
-        let versionDir = paths.engineVersions.appendingPathComponent(pin.version, isDirectory: true)
-        try? fm.removeItem(at: versionDir)
-        try fm.createDirectory(at: versionDir, withIntermediateDirectories: true)
-        try fm.moveItem(at: wineTree, to: versionDir.appendingPathComponent("wine"))
-        try Data("\(pin.version)\n".utf8)
-            .write(to: versionDir.appendingPathComponent("version"))
+        let engineDir = paths.engineVersions.appendingPathComponent(descriptor.id, isDirectory: true)
+        try? fm.removeItem(at: engineDir)
+        try fm.createDirectory(at: engineDir, withIntermediateDirectories: true)
+        try fm.moveItem(at: wineRoot, to: engineDir.appendingPathComponent("wine"))
+
+        // Record the descriptor so the engine is self-describing on disk.
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = .prettyPrinted
+        try encoder.encode(descriptor).write(to: engineDir.appendingPathComponent("descriptor.json"))
+        // Legacy plain-text version marker (kept for humans).
+        try Data("\(descriptor.version)\n".utf8).write(to: engineDir.appendingPathComponent("version"))
 
         // Gatekeeper would block the unsigned Wine binaries if quarantined.
-        try Self.stripQuarantine(at: versionDir)
+        try Self.stripQuarantine(at: engineDir)
+    }
 
-        // Swap point: engine/current -> <version> (relative symlink).
-        try? fm.removeItem(at: paths.engineCurrent)
-        try fm.createSymbolicLink(atPath: paths.engineCurrent.path,
-                                  withDestinationPath: pin.version)
+    /// Depth-limited search for a directory holding `bin/<binaryName>`.
+    static func findWineRoot(in staging: URL, binaryName: String) -> URL? {
+        let fm = FileManager.default
+        var frontier = [staging]
+        var depth = 0
+        while !frontier.isEmpty, depth < 6 {
+            var next: [URL] = []
+            for dir in frontier {
+                let candidate = dir.appendingPathComponent("bin/\(binaryName)")
+                if fm.isExecutableFile(atPath: candidate.path) {
+                    return dir
+                }
+                let children = (try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.isDirectoryKey])) ?? []
+                next.append(contentsOf: children.filter { $0.hasDirectoryPath })
+            }
+            frontier = next
+            depth += 1
+        }
+        return nil
     }
 
     /// Engine-agnostic quarantine strip (spec §4.1). Ensures owner-write

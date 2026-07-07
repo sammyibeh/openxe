@@ -19,33 +19,56 @@ public enum PrefixError: Error, LocalizedError {
 /// user profile). Spec §4.2. Idempotent via a ready-marker file.
 public final class PrefixManager: Sendable {
     private let paths: OpenXEPaths
+    private let engine: EngineManager
     private static let readyMarker = ".openxe-ready"
 
     public init(paths: OpenXEPaths) {
         self.paths = paths
+        self.engine = EngineManager(paths: paths)
     }
 
+    /// The engine id recorded when the prefix was last built, if any.
+    private var markerEngineID: String? {
+        let marker = paths.prefix.appendingPathComponent(Self.readyMarker)
+        guard let text = try? String(contentsOf: marker, encoding: .utf8) else { return nil }
+        for line in text.split(separator: "\n") where line.hasPrefix("engine=") {
+            return String(line.dropFirst("engine=".count)).trimmingCharacters(in: .whitespaces)
+        }
+        return nil
+    }
+
+    /// The prefix is ready only when it was built for the *currently active*
+    /// engine. A Wine prefix is bound to its engine (Wine does not support
+    /// downgrades), so switching engines invalidates it and forces a rebuild
+    /// (spec §4.2, §8).
     public var isReady: Bool {
-        FileManager.default.fileExists(
-            atPath: paths.prefix.appendingPathComponent(Self.readyMarker).path)
+        guard let built = markerEngineID else { return false }
+        return built == (engine.activeEngineID ?? "")
     }
 
     public func ensurePrefix() throws {
         guard !isReady else { return }
         let fm = FileManager.default
+
+        // A prefix left over from a different engine must be wiped first —
+        // never reuse a mismatched prefix.
+        if fm.fileExists(atPath: paths.prefix.path), markerEngineID != engine.activeEngineID {
+            shutdownServer()
+            try? fm.removeItem(at: paths.prefix)
+        }
         try fm.createDirectory(at: paths.prefix, withIntermediateDirectories: true)
         let env = WineEnvironment.build(engineCurrent: paths.engineCurrent, prefix: paths.prefix)
 
         // 1. Boot. Bundled shared Mono/Gecko auto-install here (spec §4.1);
         //    allow generous time for that one-time work.
-        let boot = try Subprocess.run(paths.wineBinary,
+        let boot = try Subprocess.run(engine.activeWineBinary,
                                       arguments: ["wineboot", "--init"],
                                       environment: env, timeout: 900)
         guard boot.status == 0 else {
             throw PrefixError.bootFailed(status: boot.status, detail: String(boot.output.suffix(400)))
         }
         // Wait for background services (mono/gecko installers) to finish.
-        _ = try? Subprocess.run(paths.wineserverBinary, arguments: ["-w"],
+        _ = try? Subprocess.run(engine.activeWineserverBinary, arguments: ["-w"],
                                 environment: env, timeout: 900, captureOutput: false)
 
         // 2. Verify Mono + Gecko — hard requirement; fail loudly, never degrade.
@@ -87,21 +110,25 @@ public final class PrefixManager: Sendable {
             try fm.createSymbolicLink(atPath: winFolder.path, withDestinationPath: target.path)
         }
 
-        // 5. Ready marker records the creating engine version.
-        let engineVersion = EngineManager(paths: paths).installedVersion ?? "unknown"
-        try Data("engine=\(engineVersion)\n".utf8)
+        // 5. Ready marker records the creating engine id (the rebuild key).
+        let engineID = engine.activeEngineID ?? "unknown"
+        try Data("engine=\(engineID)\n".utf8)
             .write(to: paths.prefix.appendingPathComponent(Self.readyMarker))
     }
 
     /// Destructive: shuts the environment down and deletes the prefix.
     /// The Shell confirms with the user before calling this (spec §4.2).
     public func reset() throws {
-        let env = WineEnvironment.build(engineCurrent: paths.engineCurrent, prefix: paths.prefix)
-        _ = try? Subprocess.run(paths.wineserverBinary, arguments: ["-k"],
-                                environment: env, timeout: 30, captureOutput: false)
-        _ = try? Subprocess.run(paths.wineserverBinary, arguments: ["-w"],
-                                environment: env, timeout: 60, captureOutput: false)
+        shutdownServer()
         try FileManager.default.removeItem(at: paths.prefix)
+    }
+
+    private func shutdownServer() {
+        let env = WineEnvironment.build(engineCurrent: paths.engineCurrent, prefix: paths.prefix)
+        _ = try? Subprocess.run(engine.activeWineserverBinary, arguments: ["-k"],
+                                environment: env, timeout: 30, captureOutput: false)
+        _ = try? Subprocess.run(engine.activeWineserverBinary, arguments: ["-w"],
+                                environment: env, timeout: 60, captureOutput: false)
     }
 
     // MARK: helpers
@@ -116,7 +143,7 @@ public final class PrefixManager: Sendable {
     private func registryAdd(key: String, value: String, type: String, data: String,
                              env: [String: String]) throws {
         let result = try Subprocess.run(
-            paths.wineBinary,
+            engine.activeWineBinary,
             arguments: ["reg", "add", key, "/v", value, "/t", type, "/d", data, "/f"],
             environment: env, timeout: 120)
         guard result.status == 0 else {

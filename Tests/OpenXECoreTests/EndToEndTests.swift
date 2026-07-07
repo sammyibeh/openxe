@@ -14,19 +14,18 @@ final class EndToEndTests: XCTestCase {
 
         let paths = OpenXEPaths.standard
 
-        // 1. Engine: download (resumable), verify pinned SHA-256, unpack, swap in.
+        // 1. Engine: ensure the default (stock) engine is installed and active.
         let engine = EngineManager(paths: paths)
-        if !engine.isInstalled {
-            try await engine.install { progress in
-                if case .downloading(let fraction) = progress, fraction > 0 {
-                    // coarse progress trace for CI logs
-                    if Int(fraction * 100) % 25 == 0 { print("download \(Int(fraction * 100))%") }
-                }
+        try await engine.ensureDefaultActive { progress in
+            if case .downloading(let fraction) = progress, fraction > 0,
+               Int(fraction * 100) % 25 == 0 {
+                print("download \(Int(fraction * 100))%")
             }
         }
-        XCTAssertTrue(engine.isInstalled)
-        XCTAssertTrue(FileManager.default.isExecutableFile(atPath: paths.wineBinary.path))
-        XCTAssertEqual(engine.installedVersion, EnginePin.current.version)
+        XCTAssertTrue(engine.isActiveInstalled)
+        XCTAssertEqual(engine.activeEngineID, EngineCatalog.stock.id)
+        XCTAssertTrue(FileManager.default.isExecutableFile(atPath: engine.activeWineBinary.path))
+        XCTAssertEqual(engine.installedVersion, EngineCatalog.stock.version)
 
         // 2. Prefix: boot once, verify Mono + Gecko, Retina keys, folder symlinks.
         let prefixManager = PrefixManager(paths: paths)
@@ -85,5 +84,64 @@ final class EndToEndTests: XCTestCase {
         // Cleanup path: removeAllLaunchers takes ours out again.
         XCTAssertEqual(launchers.removeAllLaunchers(), 1)
         XCTAssertFalse(launchers.launcherExists(for: notepad))
+    }
+
+    /// Multi-engine plumbing proof (spec §4.1): install a second, non-Gcenx
+    /// engine from a local archive, activate it, confirm the per-engine wine
+    /// loader name resolves, and drive it through Runner. Uses a CrossOver-
+    /// derived test article (WhiskyWine, wine64 loader) in an isolated root so
+    /// the user's real engine/prefix are untouched.
+    ///
+    /// Run: OPENXE_CW_ARCHIVE=/path/to/whiskywine.tar.gz \
+    ///      OPENXE_CW_SHA256=<sha256> swift test --filter testMultiEnginePlumbing
+    func testMultiEnginePlumbingWithLocalCrossOverArchive() async throws {
+        let env = ProcessInfo.processInfo.environment
+        try XCTSkipUnless(env["OPENXE_CW_ARCHIVE"] != nil && env["OPENXE_CW_SHA256"] != nil,
+            "set OPENXE_CW_ARCHIVE and OPENXE_CW_SHA256 to run the multi-engine plumbing test")
+        let archivePath = env["OPENXE_CW_ARCHIVE"]!
+        let sha = env["OPENXE_CW_SHA256"]!
+
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory.appendingPathComponent("openxe-plumbing-\(UUID().uuidString)")
+        defer { try? fm.removeItem(at: root) }
+        let paths = OpenXEPaths(root: root)
+        let engine = EngineManager(paths: paths)
+
+        let cw = EngineDescriptor(
+            id: "wine-crossover-testarticle",
+            displayName: "Wine-Crossover (test article)",
+            version: "whiskywine-0.2.3.3",
+            url: URL(string: "file://\(archivePath)")!,
+            sha256: sha,
+            wineBinaryName: "wine64")
+
+        // Install from local archive (no network). The first engine installed
+        // is auto-activated, so it becomes current without an explicit switch.
+        try engine.installLocalArchive(cw, archive: URL(fileURLWithPath: archivePath))
+        XCTAssertEqual(engine.installedEngineIDs(), [cw.id])
+        XCTAssertEqual(engine.activeEngineID, cw.id)
+        XCTAssertFalse(try engine.setActive(cw.id)) // already active → no rebuild
+
+        // The per-engine loader name resolves to wine64 (not the stock "wine").
+        XCTAssertEqual(engine.activeWineBinary.lastPathComponent, "wine64")
+        XCTAssertTrue(fm.isExecutableFile(atPath: engine.activeWineBinary.path))
+
+        // Runner drives the CrossOver engine: `wine64 --version` proves Runner
+        // resolved and executed *this* engine's loader (CrossOver-based
+        // wine-7.x, distinct from the stock 11.0 build) with captured output —
+        // deterministic, no prefix/console dependency.
+        let runner = Runner(paths: paths)
+        let version = try runner.runCapturingOutput(arguments: ["--version"], timeout: 60)
+        XCTAssertTrue(version.contains("wine-7."), "active engine wine64 --version was: \(version)")
+
+        // Prefix rebuild-on-engine-change: a prefix built for a different
+        // engine must report not-ready under the CrossOver engine.
+        try fm.createDirectory(at: paths.prefix, withIntermediateDirectories: true)
+        try Data("engine=some-other-engine\n".utf8)
+            .write(to: paths.prefix.appendingPathComponent(".openxe-ready"))
+        XCTAssertFalse(PrefixManager(paths: paths).isReady,
+                       "prefix from a different engine must force a rebuild")
+
+        runner.shutdownWineserver()
     }
 }

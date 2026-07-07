@@ -13,9 +13,11 @@ public final class Runner: Sendable {
     public static let launchWatchSeconds: TimeInterval = 15
 
     private let paths: OpenXEPaths
+    private let engine: EngineManager
 
     public init(paths: OpenXEPaths) {
         self.paths = paths
+        self.engine = EngineManager(paths: paths)
     }
 
     private var environment: [String: String] {
@@ -28,14 +30,14 @@ public final class Runner: Sendable {
     /// `wineserver -p` daemonizes and outlives individual programs, making
     /// repeat launches near-instant.
     public func ensureWineserverWarm() {
-        _ = try? Subprocess.run(paths.wineserverBinary, arguments: ["-p"],
+        _ = try? Subprocess.run(engine.activeWineserverBinary, arguments: ["-p"],
                                 environment: environment, timeout: 60,
                                 captureOutput: false)
     }
 
     /// Settings action: "Shut Down Windows Environment".
     public func shutdownWineserver() {
-        _ = try? Subprocess.run(paths.wineserverBinary, arguments: ["-k"],
+        _ = try? Subprocess.run(engine.activeWineserverBinary, arguments: ["-k"],
                                 environment: environment, timeout: 30,
                                 captureOutput: false)
     }
@@ -53,7 +55,7 @@ public final class Runner: Sendable {
         defer { try? log.close() }
 
         let process = Process()
-        process.executableURL = paths.wineBinary
+        process.executableURL = engine.activeWineBinary
         process.arguments = [exe.path]
         process.environment = environment
         process.currentDirectoryURL = exe.deletingLastPathComponent()
@@ -76,7 +78,7 @@ public final class Runner: Sendable {
     /// Used by the end-to-end test (`cmd /c echo …`) and prefix tooling.
     public func runCapturingOutput(arguments: [String], timeout: TimeInterval) throws -> String {
         ensureWineserverWarm()
-        let result = try Subprocess.run(paths.wineBinary, arguments: arguments,
+        let result = try Subprocess.run(engine.activeWineBinary, arguments: arguments,
                                         environment: environment, timeout: timeout)
         return result.output
     }

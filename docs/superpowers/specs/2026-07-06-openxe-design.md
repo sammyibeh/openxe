@@ -136,6 +136,30 @@ App lifecycle: `LSUIElement` accessory app; activates only to show a window or a
 
 Reads the first bytes of the file: DOS `MZ` magic → `e_lfanew` at offset 0x3C → `PE\0\0` signature → COFF machine field → optional-header magic (PE32/PE32+) → CLR data-directory presence (.NET). Classifies: `win32` (i386), `win64` (x86_64), `dotNET`, `armWindows` (ARM/ARM64 machine types), `dos16`, `notPE`. Runner launches `win32`/`win64`/`dotNET`; everything else gets a specific plain-language refusal (e.g., "This is a Windows-on-ARM program; OpenXE's engine runs x86 Windows programs only").
 
+### 4.6 Per-app configuration — "bottle-lean" (2026-07-08)
+
+**Responsibility:** deliver CrossOver-style per-app settings — a per-app Windows version and per-app DLL overrides — WITHOUT the cost of separate prefixes.
+
+**Architecture decision (the tradeoff).** True CrossOver bottles are separate prefixes; some Wine settings are genuinely prefix-global. OpenXE's charter mandates **one** persistent prefix (the durable memory), and a prefix is 1:1 with an engine (§4.1). Two options were weighed:
+
+- **(a) Per-app config applied to the shared prefix at launch** — chosen.
+- **(b) Lightweight per-app prefixes** — rejected for v1: multiplies the ~1 GB footprint per app, forces a Mono/Gecko install per bottle, and reopens the engine-per-prefix binding — disproportionate to the ask.
+
+Option (a) is not a compromise for the two settings the user actually wants, because **Wine already supports both per-application, inside a single prefix**:
+
+- **Windows version** — written to Wine's native `HKCU\Software\Wine\AppDefaults\<exe>\Version` key (the exact mechanism winecfg's *Applications* tab uses). Wine reads it per-process keyed by the running exe's file name. **Verified 2026-07-08:** with `AppDefaults\cmd.exe\Version=winxp`, `cmd /c ver` reports *Microsoft Windows 5.1.2600*; flipped to `win10` it reports *Microsoft Windows 10.0.19045* — same prefix, per-app version, honored by Wine.
+- **DLL overrides** — carried in the per-launch `WINEDLLOVERRIDES` env var (native/builtin/order/disabled per DLL). Nothing persists in the prefix; the override applies only to that launch.
+
+What is genuinely prefix-global (and therefore **not** made per-app): the active **engine** (1:1 with the single prefix — kept global per §4.1's decision) and the `DisableHWAcceleration` default (§4.2 3b, a prefix-wide registry value). Surfacing a per-app *engine* would mislead — it would silently require a per-app prefix — so it is deliberately omitted. This is the honest lean line: per-app **Windows version + DLL overrides** delivered; per-app engine/bottle still out of scope (§10).
+
+**Data model (`AppConfig`, Core, `Codable`, unit-tested).** `{ exePath (identity key), windowsVersion: default|winxp|win7|win10|win11, dllOverrides: [{dll, mode: native|builtin|nativeBuiltin|builtinNative|disabled}], environment: [String:String] }`. Persisted by `AppConfigStore` as one JSON dictionary (`…/OpenXE/appconfigs.json`) keyed by exe path; an all-default config is pruned (no clutter). `WINEDLLOVERRIDES` string and its parser round-trip (`dll=n,b;dll2=b;dll3=`), both unit-tested.
+
+**Apply at launch (`Runner.launch`).** Before spawning: `applyWindowsVersion` writes (or, for Default, clears) the `AppDefaults\<exe>\Version` key; `WineEnvironment.buildLaunch` overlays `WINEDLLOVERRIDES` and any per-app env onto the base env — with `WINEPREFIX`/`PATH`/`DYLD_FALLBACK_LIBRARY_PATH` locked so a per-app env can never break engine resolution. A nil/all-default config yields exactly the base env (regression-guarded by test).
+
+**UI (`AppConfigWindow`, Shell).** Reached from Settings → *Per-App Settings…*. Minimal and native: pick a known app (union of generated-launcher targets and existing configs), set Windows version (popup) and DLL overrides (text field, e.g. `d3d11=n,b; dxgi=b`), Save. No business logic in the Shell — it edits `AppConfig` and calls `AppConfigStore`.
+
+**Dependencies:** Foundation (Core), AppKit (UI). No new third-party dependency.
+
 ## 5. Data Flow — double-click an `.exe`
 
 1. Finder → LaunchServices → OpenXE receives open-file event.
@@ -185,6 +209,12 @@ Steps 3–4 run at most once per environment lifetime; the steady-state path is 
 
    **GPU map / Vulkan is a separate future scope.** NWS's secondary GPU/map view logs non-fatal `vulkan_init_once` (no `libvulkan.1.dylib`) and `GL_INVALID_FRAMEBUFFER_OPERATION` warnings. These are **not** the cause of either crash above and are explicitly out of scope for the font work; revisit only if the map view becomes a target.
 
+8. **Newer NWS leans harder on hardware rendering — lean fix applied, GPU stack escalation documented (2026-07-08).** A newer NWS build (its older font FailFast is gone — the §4.2/§7 fix holds) fails on graphics: `err:vulkan:vulkan_init_once Failed to load libvulkan.1.dylib`, `err:vulkan:init_vulkan Failed to load Wine graphics driver supporting Vulkan`, and many `err:d3d:wined3d_check_gl_call GL_INVALID_FRAMEBUFFER_OPERATION (0x506) from glClear`.
+   - **Confirmed environment facts.** The engine ships `winevulkan.so`/`.dll` but there is **no `libvulkan.1.dylib` (MoltenVK)** anywhere in it — so `vulkan-1` cannot init; and the host loader is **x86_64** (`wineserver` is `Mach-O 64-bit x86_64`, running under Rosetta), so arm64 Homebrew Vulkan/MoltenVK dylibs cannot load into it (confirmed prior). The `glClear`/`GL_INVALID_FRAMEBUFFER_OPERATION` line is wined3d's D3D→OpenGL path hitting the Mac GL driver.
+   - **Lean fix (applied, §4.2 3b).** Force WPF software rendering (`Avalon.Graphics\DisableHWAcceleration=1`) prefix-wide, with a per-app re-enable available (§4.6). This removes WPF's own hardware-tier GL usage. **Verified 2026-07-08** it does not regress NWS 8.1 (still launches, zero graphics/crash signatures). The newer NWS binary was **not available in this session**, so whether software rendering alone brings its main scheduler UI up could not be confirmed end-to-end — that verification needs the binary.
+   - **Escalation criterion (precise).** `DisableHWAcceleration` only governs WPF's *own* render tier. If the newer NWS's `glClear` errors originate from a **separate D3D/GPU surface** it creates itself (a SkiaSharp GPU backend, or a Direct3D map/scene control) rather than from WPF, software rendering will **not** stop them and that view stays broken. If the newer NWS refuses to show its **main** UI without a working GPU, the real fix is a larger-scope GPU stack: bundle an **x86_64** MoltenVK (`libvulkan.1.dylib` / `libMoltenVK.dylib`, NOT arm64 — the loader is x86_64-under-Rosetta) plus a D3D→Vulkan/Metal translation layer (**DXVK**, or **DXMT/D3DMetal**). That is a deliberate, separate scope decision (footprint, licensing, build), not undertaken here.
+   - **bcrypt "no encryption support" — separate potential blocker, flagged.** The many `bcrypt` errors are because the engine is built `--without-gnutls` (intentional, `scripts/build-engine.sh`): no gnutls → no symmetric-cipher/`BCryptEncrypt` and no Windows **schannel** TLS backend. Verified: no `libgnutls*` in the engine, `bcrypt.so` links none. For NWS this is **likely noise** — NWS 8.1 runs and its licensing is a local `.mapsuitelicense` file, and .NET apps typically do TLS via managed `SslStream`, not schannel. But **if** the newer NWS performs licensing/activation or update checks over Windows-side TLS (schannel/bcrypt), that will fail independently of the GPU issue. Resolution if it bites: build the engine `--with-gnutls` (adds an x86_64 gnutls dependency to the from-source build) — a separate engine-build scope item.
+
 ## 9. Scope Addition — user-directed, 2026-07-06 (supersedes §10 where they conflict)
 
 Three features added after the base design was approved, in priority order.
@@ -220,8 +250,8 @@ Running a Windows program presented a generic Wine icon and process name in the 
 
 ## 10. Out of Scope (v1 — binding)
 
-- DirectX/gaming stack (DXVK, MoltenVK tuning, game controllers)
-- Multiple prefixes / bottles
+- DirectX/gaming stack (DXVK, MoltenVK tuning, game controllers) — see §8 for the newer-NWS GPU escalation criterion
+- Multiple prefixes / bottles as separate WINEPREFIXes, and per-app **engine** selection (per-app Windows version + DLL overrides ARE delivered in-prefix via §4.6; separate-prefix bottles and per-app engines remain out of scope)
 - Library UI, menu bar item, Dock presence while idle
 - `.msi` special-casing (installers run only if the vendor ships an `.exe`)
 - Notarization, distribution, auto-update (ad-hoc signing only; the swappable engine is the only update surface)

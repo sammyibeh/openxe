@@ -70,4 +70,24 @@ public enum WineEnvironment {
             "DYLD_FALLBACK_LIBRARY_PATH": "\(engineCurrent.path)/wine/lib:/usr/lib:/usr/local/lib",
         ]
     }
+
+    /// The launch environment for a specific app: the base env overlaid with the
+    /// per-app config's `WINEDLLOVERRIDES` and extra environment (spec §4.6). The
+    /// app's Windows version is applied separately as a registry key (Wine has no
+    /// env var for it). With a nil/all-default config this equals `build`.
+    public static func buildLaunch(engineCurrent: URL, prefix: URL,
+                                   config: AppConfig?) -> [String: String] {
+        var env = build(engineCurrent: engineCurrent, prefix: prefix)
+        guard let config else { return env }
+        if let overrides = config.dllOverridesString {
+            env["WINEDLLOVERRIDES"] = overrides
+        }
+        // Per-app env wins, but never let it clobber the load-bearing keys that
+        // make Wine resolve the engine at all (WINEPREFIX/PATH/DYLD path).
+        let locked: Set<String> = ["WINEPREFIX", "PATH", "DYLD_FALLBACK_LIBRARY_PATH"]
+        for (key, value) in config.environment where !locked.contains(key) {
+            env[key] = value
+        }
+        return env
+    }
 }

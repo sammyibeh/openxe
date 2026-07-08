@@ -14,6 +14,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
     private let statusLabel = NSTextField(labelWithString: "")
     private let enginePopup = NSPopUpButton(frame: .zero, pullsDown: false)
     private var installedEngineIDs: [String] = []
+    private var appConfigWindow: AppConfigWindowController?
 
     init(engine: EngineManager, prefixManager: PrefixManager, runner: Runner,
          paths: OpenXEPaths, onClose: @escaping () -> Void) {
@@ -61,8 +62,9 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         let reset = button("Reset Environment…", #selector(resetEnvironment))
         reset.isEnabled = prefixManager.isReady
         let removeLaunchers = button("Remove Generated Launchers", #selector(removeGeneratedLaunchers))
+        let perApp = button("Per-App Settings…", #selector(openAppConfig))
 
-        let stack = NSStackView(views: [engineLabel, enginePopup, openC, shutdown,
+        let stack = NSStackView(views: [engineLabel, enginePopup, perApp, openC, shutdown,
                                         reset, removeLaunchers, statusLabel])
         stack.orientation = .vertical
         stack.alignment = .leading
@@ -118,6 +120,14 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         } catch {
             statusLabel.stringValue = "Could not switch engine: \(error.localizedDescription)"
         }
+    }
+
+    @objc private func openAppConfig() {
+        if appConfigWindow == nil {
+            appConfigWindow = AppConfigWindowController(
+                paths: paths, onClose: { [weak self] in self?.appConfigWindow = nil })
+        }
+        appConfigWindow?.show()
     }
 
     @objc private func removeGeneratedLaunchers() {

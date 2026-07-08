@@ -16,10 +16,12 @@ public final class Runner: Sendable {
 
     private let paths: OpenXEPaths
     private let engine: EngineManager
+    private let appConfigs: AppConfigStore
 
     public init(paths: OpenXEPaths) {
         self.paths = paths
         self.engine = EngineManager(paths: paths)
+        self.appConfigs = AppConfigStore(paths: paths)
     }
 
     private var environment: [String: String] {
@@ -53,13 +55,22 @@ public final class Runner: Sendable {
         guard verdict.isLaunchable else { return .refused(verdict) }
 
         ensureWineserverWarm()
+
+        // Per-app "bottle-lean" config (spec §4.6): apply the app's Windows
+        // version (Wine AppDefaults registry key) and carry its DLL overrides /
+        // env into the launch environment. Best-effort — a config problem must
+        // never block a launch.
+        let config = appConfigs.config(for: exe)
+        applyWindowsVersion(config, exe: exe)
+
         let log = try openLog(sessionNote: exe.lastPathComponent)
         defer { try? log.close() }
 
         // Launch through a per-exe icon-wrapper .app when one can be built, so
         // the program shows its own icon and name in the Dock (spec §9.5). Fall
         // back to the plain wine binary — the wrapper is never a launch blocker.
-        var env = environment
+        var env = WineEnvironment.buildLaunch(engineCurrent: paths.engineCurrent,
+                                              prefix: paths.prefix, config: config)
         let executable: URL
         if let loader = iconWrapperLoader(for: exe) {
             executable = loader
@@ -86,6 +97,29 @@ public final class Runner: Sendable {
         }
         // Still running after the watch window (or exited cleanly): launched.
         return .launched(pid: process.processIdentifier)
+    }
+
+    /// Applies the app's per-app Windows version by writing Wine's native
+    /// per-application key `HKCU\Software\Wine\AppDefaults\<exe>\Version` (the
+    /// same mechanism winecfg's Applications tab uses). Wine reads it per-process
+    /// keyed by the running exe's file name, so this delivers a CrossOver-style
+    /// per-app Windows version inside the single shared prefix (spec §4.6).
+    /// Best-effort and idempotent; when the config is Default the key is removed
+    /// so the app falls back to the prefix-global version.
+    private func applyWindowsVersion(_ config: AppConfig?, exe: URL) {
+        let appKey = #"HKCU\Software\Wine\AppDefaults\"# + exe.lastPathComponent
+        let env = environment
+        if let value = config?.windowsVersion.wineValue {
+            _ = try? Subprocess.run(engine.activeWineBinary,
+                                    arguments: ["reg", "add", appKey, "/v", "Version",
+                                                "/t", "REG_SZ", "/d", value, "/f"],
+                                    environment: env, timeout: 60, captureOutput: false)
+        } else {
+            // No per-app version requested: clear any stale key we wrote before.
+            _ = try? Subprocess.run(engine.activeWineBinary,
+                                    arguments: ["reg", "delete", appKey, "/v", "Version", "/f"],
+                                    environment: env, timeout: 60, captureOutput: false)
+        }
     }
 
     /// Run a Windows program via wine and capture its combined output.

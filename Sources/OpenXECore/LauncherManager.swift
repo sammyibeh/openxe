@@ -111,6 +111,12 @@ public final class LauncherManager: Sendable {
         existingLaunchers().contains { $0.target == exe.path }
     }
 
+    /// The exe paths of every generated launcher, for the per-app settings UI
+    /// (the natural set of "apps OpenXE knows about"). Deduplicated.
+    public func knownTargetPaths() -> [String] {
+        Array(Set(existingLaunchers().map { $0.target })).sorted()
+    }
+
     private func existingLaunchers() -> [(bundle: URL, target: String)] {
         let fm = FileManager.default
         var found: [(URL, String)] = []

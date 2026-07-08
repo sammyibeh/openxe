@@ -1,0 +1,18 @@
+OpenXE
+Copyright (c) 2026 OpenXE contributors
+Licensed under the MIT License (see LICENSE).
+
+This product runs and depends on third-party software:
+
+- Wine / Wine-Crossover engine — LGPL-2.1-or-later. Used as an unmodified
+  external subprocess, never linked or modified, downloaded at first run and
+  stored outside the OpenXE app bundle. Corresponding source and build recipe:
+  see THIRD-PARTY.md and scripts/build-engine.sh.
+
+- Wine Mono / Wine Gecko — distributed by the Wine project under their
+  respective licenses; installed into the Wine prefix unmodified.
+
+- FontAwesome (Resources/FontAwesome.ttf) — SIL Open Font License 1.1 (OFL-1.1).
+
+Full details, provenance, and how to obtain corresponding source are in
+THIRD-PARTY.md.

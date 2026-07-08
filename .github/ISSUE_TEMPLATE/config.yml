@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Installing / running OpenXE (not a bug)
+    url: https://github.com/sammyiyke/openxe/blob/main/INSTALL.md
+    about: Read the install guide first — Gatekeeper, Rosetta, and first-run engine download are covered there.
+  - name: Contributing / building from source
+    url: https://github.com/sammyiyke/openxe/blob/main/CONTRIBUTING.md
+    about: Developer setup, architecture, and how to add support for a new app.

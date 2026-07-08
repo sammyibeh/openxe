@@ -89,20 +89,24 @@ public final class PrefixManager: Sendable {
         try registryAdd(key: #"HKCU\Control Panel\Desktop"#, value: "LogPixels",
                         type: "REG_DWORD", data: "192", env: env)
 
-        // 3a. WPF/.NET font compatibility (spec §4.2). Best-effort — font issues
-        //     must never block a launch. Two wine-mono WPF text-layout bugs bite
-        //     real apps and were verified against New World Scheduler:
-        //     - No "Segoe UI" (WPF's default UI font) exists in the prefix and it
-        //       has no substitute, so the missing-font fallback NULL-derefs in
-        //       MS.Internal.TextFormatting during TextBlock.Measure. Substituting
-        //       Segoe UI (and its weights/symbol variants) onto fonts the Mac
-        //       driver already registers (Verdana/Arial/Webdings) avoids it.
-        //     - wine-mono fails to load app-*embedded* FontAwesome resources and
-        //       NULL-derefs in LineServicesCallbacks.InlineFormat when icon glyphs
-        //       lay out; a system-installed FontAwesome is picked up by family-name
-        //       fallback and resolves it. Verified 2026-07-07: without this NWS
-        //       crashes on every launch; with it, it survives active interaction.
-        installWPFCompatFonts(env: env)
+        // 3a. Font provisioning (spec §4.2). Best-effort — font issues must never
+        //     block a launch. Generalized from the NWS-specific fix into a base
+        //     applied to every prefix: install the one font macOS lacks
+        //     (FontAwesome) and register broad fallback substitutions so any
+        //     Windows font we cannot supply degrades to a close available face
+        //     instead of NULL-derefing wine-mono's WPF text layout. See
+        //     FontProvisioning for the base-fonts-from-macOS rationale.
+        provisionFonts(env: env)
+
+        // 3b. Software rendering default (spec §4.2, §8). OpenXE ships no GPU
+        //     stack (no MoltenVK/DXVK), so WPF's hardware render tier hits the
+        //     Mac GL/Vulkan path and logs GL_INVALID_FRAMEBUFFER_OPERATION /
+        //     failed vulkan_init. Forcing WPF onto its software render tier
+        //     (Avalon.Graphics\DisableHWAcceleration=1) keeps GPU-leaning apps on
+        //     a path that actually works here. The map/3D view degrades; the main
+        //     UI renders. Best-effort; a per-app override can re-enable it later.
+        regBestEffort([#"HKCU\Software\Microsoft\Avalon.Graphics"#,
+                       "/v", "DisableHWAcceleration", "/t", "REG_DWORD", "/d", "1", "/f"], env: env)
 
         // 4. Link the Mac's real folders into the Windows user profile.
         //    Best-effort: folder linking must NEVER abort ensurePrefix, or the
@@ -167,38 +171,34 @@ public final class PrefixManager: Sendable {
         }
     }
 
-    /// Installs the bundled WPF-compat font and the font substitutions that
-    /// keep wine-mono's text layout from crashing (see call site). Best-effort:
-    /// any failure is swallowed so it can never block prefix readiness.
-    private func installWPFCompatFonts(env: [String: String]) {
+    /// Font provisioning (spec §4.2 step 3a): install the one bundled font macOS
+    /// lacks and register the broad fallback substitution table from
+    /// `FontProvisioning`. Idempotent and best-effort: any failure is swallowed
+    /// so it can never block prefix readiness.
+    private func provisionFonts(env: [String: String]) {
         let fm = FileManager.default
         let fontsDir = paths.prefix.appendingPathComponent("drive_c/windows/Fonts")
         try? fm.createDirectory(at: fontsDir, withIntermediateDirectories: true)
 
         // Install the bundled FontAwesome so family-name fallback resolves it
-        // when wine-mono cannot load an app's embedded copy.
-        if let src = Bundle.main.url(forResource: "FontAwesome", withExtension: "ttf") {
-            let dst = fontsDir.appendingPathComponent("FontAwesome.ttf")
+        // when wine-mono cannot load an app's embedded copy. Every other common
+        // font (the Microsoft corefonts) is already provided by the Mac driver
+        // from macOS — see FontProvisioning for why we do not bundle those.
+        if let src = Bundle.main.url(forResource: FontProvisioning.bundledFontResource,
+                                     withExtension: "ttf") {
+            let dst = fontsDir.appendingPathComponent(FontProvisioning.bundledFontFileName)
             try? fm.removeItem(at: dst)
             if (try? fm.copyItem(at: src, to: dst)) != nil {
                 regBestEffort([#"HKLM\Software\Microsoft\Windows NT\CurrentVersion\Fonts"#,
                                "/v", "FontAwesome (TrueType)", "/t", "REG_SZ",
-                               "/d", "FontAwesome.ttf", "/f"], env: env)
+                               "/d", FontProvisioning.bundledFontFileName, "/f"], env: env)
             }
         }
 
-        // Face-name substitutions. Targets (Verdana/Arial/Webdings) are macOS
-        // system fonts the Mac driver auto-registers into every prefix, so they
-        // are always resolvable. Set both the GDI table (which wine-mono reads
-        // for WPF) and wine's own Replacements table.
-        let subs: [(String, String)] = [
-            ("Segoe UI", "Verdana"), ("Segoe UI Semibold", "Verdana"),
-            ("Segoe UI Light", "Verdana"), ("Segoe UI Semilight", "Verdana"),
-            ("Segoe UI Black", "Verdana"), ("Segoe UI Symbol", "Arial"),
-            ("Segoe MDL2 Assets", "Webdings"), ("Segoe Fluent Icons", "Webdings"),
-            ("Wingdings", "Webdings"),
-        ]
-        for (from, to) in subs {
+        // Broad fallback substitutions. Set both the GDI table (which wine-mono
+        // reads for WPF) and wine's own Replacements table so a missing font
+        // degrades to a close available face rather than crashing.
+        for (from, to) in FontProvisioning.substitutions {
             regBestEffort([#"HKLM\Software\Microsoft\Windows NT\CurrentVersion\FontSubstitutes"#,
                            "/v", from, "/t", "REG_SZ", "/d", to, "/f"], env: env)
             regBestEffort([#"HKCU\Software\Wine\Fonts\Replacements"#,

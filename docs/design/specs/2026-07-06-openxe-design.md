@@ -122,9 +122,10 @@ Shell (AppKit UI: first-run progress, settings, alerts)
 
 ### 4.4 Shell (UI)
 
-**Responsibility:** the only component that touches AppKit. Three surfaces, nothing more:
+**Responsibility:** the only component that touches AppKit. Surfaces, nothing more:
 
-1. **First-run progress window** — "Setting up your Windows environment — one time, ~200 MB download." Determinate bar for download, indeterminate for extraction and prefix boot. Shown only when setup work is actually pending.
+0. **Guided setup wizard** (§4.7) — the first-run entry point for a non-technical user. Shown when the app is opened directly and either the Windows environment is not ready or NWS is not installed; otherwise the settings window opens. Also reachable from Settings → *Set Up New World Scheduler…*. Four plain-language steps (welcome+disclaimer → environment → download/install NWS → done/launch), orchestration only.
+1. **First-run progress window** — "Setting up your Windows environment — one time, ~200 MB download." Determinate bar for download, indeterminate for extraction and prefix boot. Shown only when setup work is actually pending (the direct-open path now routes through the wizard's environment step; this window remains for the double-click-an-`.exe` setup path).
 2. **Settings window** (shown when the app is opened with no document): engine version display, *Open C: Drive in Finder*, *Shut Down Windows Environment*, *Reset Environment* (confirmed destructive action), plus *Remove Generated Launchers* (§9.3).
 3. **Error alerts** — every user-facing failure is an `NSAlert` with a plain-language explanation and, where a Wine log exists, a *Show Log* button (opens the log in Finder/Console).
 
@@ -159,6 +160,26 @@ What is genuinely prefix-global (and therefore **not** made per-app): the active
 **UI (`AppConfigWindow`, Shell).** Reached from Settings → *Per-App Settings…*. Minimal and native: pick a known app (union of generated-launcher targets and existing configs), set Windows version (popup) and DLL overrides (text field, e.g. `d3d11=n,b; dxgi=b`), Save. No business logic in the Shell — it edits `AppConfig` and calls `AppConfigStore`.
 
 **Dependencies:** Foundation (Core), AppKit (UI). No new third-party dependency.
+
+### 4.7 NWS setup — fetcher + guided wizard (2026-07-08)
+
+**Product framing.** OpenXE is the purpose-built "New World Scheduler on Mac" appliance — there is no native NWS build for macOS, so OpenXE is the way to run it. A first-time, non-technical user should not have to find, download, and silently install a Windows `.exe` by hand. `NWSInstaller` (Core) fetches and installs NWS; the setup wizard (Shell §4.4) drives it. **Posture: compliant + unofficial.**
+
+**Compliance (hard rules).** The NWS installer `.exe` is **never** bundled, mirrored, cached-for-redistribution, or committed to the repo. It is downloaded **at runtime** from the vendor's official source into the user's own machine, run once, then deleted. The downloaded byte size is verified against the size the release API reports. NWS activation (the in-app 60-day trial) is never touched.
+
+**`NWSInstaller` (Core, unit-tested):**
+
+- **Latest version** — GET `https://api.github.com/repos/NWScheduler/New-World-Scheduler/releases/latest`; read `tag_name` (e.g. `8.2.1460`), and from `assets[]` the `NWS-Desktop-Setup_<ver>_<build>.exe` `browser_download_url` + `size`. Verified against the live API 2026-07-08: one asset, `size` 50,109,120 for tag `8.2.1460`.
+- **Version pinning** — GET `…/releases?per_page=100`; enumerate releases (drafts/prereleases skipped, newest first) so the user can pick a specific build. `pinnedDownloadURL(tag:)` reconstructs the official asset URL from a tag alone (`<ver>.<build>` split: `8.2.1460` → ver `8.2`, build `1460` → `…/releases/download/8.2.1460/NWS-Desktop-Setup_8.2_1460.exe`); unit-tested to equal the URL the API actually serves.
+- **Fallback** — if GitHub is blocked/rate-limited (HTTP 403 with `X-RateLimit-Remaining: 0`, or 429), the vendor's own link `https://nwscheduler.com/?smd_process_download=1&download_id=10395` (302-redirects to the same GitHub asset) is used; size is then unknown so a 1 MB sanity floor replaces the exact-size check.
+- **Install** — run the downloaded installer under the **active engine's** Wine with Inno silent flags `/VERYSILENT /SUPPRESSMSGBOXES /NORESTART` (pure `innoSilentArguments`, unit-tested). Verify `NWS Desktop.exe` landed in `C:\Program Files\New World Scheduler\` (both `Program Files` and `Program Files (x86)` are checked — a 32-bit build's Inno installer targets the x86 tree). Idempotent: reinstalling upgrades in place and **never** wipes the prefix (respects the §4.2 data-loss fix).
+- **.NET note.** NWS wants .NET Framework 4.8; on this engine it runs on **Wine-Mono**, which `PrefixManager.ensurePrefix` already installs and verifies (§4.2 step 2). No additional runtime is provisioned — NWS 8.1/8.2 run today (§8). No gap to close.
+
+**Verified 2026-07-08 (end-to-end, gated `OPENXE_NWS_E2E=1`):** against the real engine + prefix, fetched `8.2.1460`, downloaded the 50,109,120-byte installer (byte-exact size match), ran the silent install, confirmed `…/Program Files/New World Scheduler/NWS Desktop.exe`, cleaned up the download, and launched it (Runner returned `.launched`). Parse/URL/version logic is unit-tested against the captured real API JSON shape plus a gated live-API read (`OPENXE_NWS_LIVE=1`).
+
+**Wizard (Shell §4.4).** A four-step first-run flow grows the first-run progress window: (1) Welcome + a prominent "unofficial, not affiliated with New World Scheduler / nwscheduler.com" disclaimer and links to the vendor download page + Terms; (2) Set up the Windows environment (reuse EngineManager/PrefixManager with friendly progress); (3) Download & install NWS — show the detected latest version, progress, silent install, and a "choose a specific version" advanced pin; (4) Done — launch NWS and note it now appears in Applications/Launchpad. Failures (no network, rate-limit → fallback, install error) surface as plain-language inline messages. Idempotent/resumable: re-running never wipes an existing NWS.
+
+**Dependencies:** EngineManager (active wine loader + env), Foundation, `URLSession`. UI: AppKit. No new third-party dependency.
 
 ## 5. Data Flow — double-click an `.exe`
 

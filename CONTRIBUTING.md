@@ -25,7 +25,7 @@ is "nothing," it probably shouldn't ship. Specifically:
   window. No library UI, no gaming/DirectX stack, no auto-update framework.
 - **Spec, then code.** Non-trivial changes start with a short design note. The v1
   design spec lives at
-  [`docs/superpowers/specs/2026-07-06-openxe-design.md`](docs/superpowers/specs/2026-07-06-openxe-design.md)
+  [`docs/design/specs/2026-07-06-openxe-design.md`](docs/design/specs/2026-07-06-openxe-design.md)
   and is the source of truth; update it in the same PR when behavior changes.
 
 ## Development environment

@@ -7,6 +7,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private lazy var engine = EngineManager(paths: paths)
     private lazy var prefixManager = PrefixManager(paths: paths)
     private lazy var runner = Runner(paths: paths)
+    private lazy var nwsInstaller = NWSInstaller(paths: paths)
 
     private var pendingExes: [URL] = []
     private var receivedOpenEvent = false
@@ -21,6 +22,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private var progressWindow: ProgressWindowController?
     private var settingsWindow: SettingsWindowController?
+    private var wizardWindow: WizardWindowController?
 
     // MARK: lifecycle
 
@@ -35,7 +37,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // then fall back to the settings window (opened directly, no document).
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
             guard let self, !self.receivedOpenEvent, !self.working else { return }
-            self.showSettings()
+            // Guided first-run: if the Windows environment isn't ready yet, or
+            // New World Scheduler isn't installed, open the setup wizard.
+            // Otherwise fall back to the small settings window.
+            let ready = self.engine.isActiveInstalled && self.prefixManager.isReady
+            if !ready || !self.nwsInstaller.isInstalled {
+                self.showWizard()
+            } else {
+                self.showSettings()
+            }
         }
     }
 
@@ -156,7 +166,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func terminateIfIdle() {
-        if !working, pendingExes.isEmpty, settingsWindow == nil, progressWindow == nil {
+        if !working, pendingExes.isEmpty, settingsWindow == nil, progressWindow == nil,
+           wizardWindow == nil {
             NSApp.terminate(nil)
         }
     }
@@ -187,6 +198,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if settingsWindow == nil {
             settingsWindow = SettingsWindowController(
                 engine: engine, prefixManager: prefixManager, runner: runner, paths: paths,
+                onSetUp: { [weak self] in self?.showWizard() },
                 onClose: { [weak self] in
                     self?.settingsWindow = nil
                     self?.terminateIfIdle()
@@ -194,6 +206,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         NSApp.activate(ignoringOtherApps: true)
         settingsWindow?.show()
+    }
+
+    func showWizard() {
+        if wizardWindow == nil {
+            wizardWindow = WizardWindowController(
+                engine: engine, prefixManager: prefixManager, nws: nwsInstaller,
+                runner: runner, paths: paths,
+                onClose: { [weak self] in
+                    self?.wizardWindow = nil
+                    self?.terminateIfIdle()
+                })
+        }
+        NSApp.activate(ignoringOtherApps: true)
+        wizardWindow?.show()
     }
 
     func showError(title: String, message: String, offerLog: Bool) {

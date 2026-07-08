@@ -2,6 +2,13 @@
 
 **Run Windows `.exe` productivity software on macOS by double-clicking it.**
 
+> **Unofficial.** OpenXE is an independent, open-source project. It is **not
+> affiliated with, endorsed by, or connected to New World Scheduler or
+> [nwscheduler.com](https://nwscheduler.com/)**. New World Scheduler is downloaded
+> at runtime directly from its official release and remains subject to its own
+> license and [terms](https://nwscheduler.com/terms-and-conditions/); OpenXE never
+> bundles, mirrors, or redistributes it.
+
 OpenXE is a lean (~0.5 MB) macOS app that registers itself as the system handler
 for `.exe` files. Double-click a Windows program in Finder and it runs — through
 an unmodified [Wine](https://www.winehq.org/) engine that OpenXE downloads and

@@ -15,7 +15,7 @@ Closes #
 
 ## Checklist
 - [ ] Change is focused and self-contained
-- [ ] Design spec updated if behavior changed (`docs/superpowers/specs/...`)
+- [ ] Design spec updated if behavior changed (`docs/design/specs/...`)
 - [ ] No new third-party Swift dependencies
 - [ ] No GPL-derived code; Wine still an unmodified external subprocess
 - [ ] Commit messages are clear and describe the *why*

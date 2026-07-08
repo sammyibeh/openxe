@@ -10,6 +10,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
     private let prefixManager: PrefixManager
     private let runner: Runner
     private let paths: OpenXEPaths
+    private let onSetUp: () -> Void
     private let onClose: () -> Void
     private let statusLabel = NSTextField(labelWithString: "")
     private let enginePopup = NSPopUpButton(frame: .zero, pullsDown: false)
@@ -17,11 +18,12 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
     private var appConfigWindow: AppConfigWindowController?
 
     init(engine: EngineManager, prefixManager: PrefixManager, runner: Runner,
-         paths: OpenXEPaths, onClose: @escaping () -> Void) {
+         paths: OpenXEPaths, onSetUp: @escaping () -> Void, onClose: @escaping () -> Void) {
         self.engine = engine
         self.prefixManager = prefixManager
         self.runner = runner
         self.paths = paths
+        self.onSetUp = onSetUp
         self.onClose = onClose
         window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 380, height: 200),
@@ -56,6 +58,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         enginePopup.target = self
         enginePopup.action = #selector(engineSelected)
 
+        let setUp = button("Set Up New World Scheduler…", #selector(openSetupWizard))
         let openC = button("Open C: Drive in Finder", #selector(openCDrive))
         openC.isEnabled = prefixManager.isReady
         let shutdown = button("Shut Down Windows Environment", #selector(shutdownEnvironment))
@@ -64,7 +67,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         let removeLaunchers = button("Remove Generated Launchers", #selector(removeGeneratedLaunchers))
         let perApp = button("Per-App Settings…", #selector(openAppConfig))
 
-        let stack = NSStackView(views: [engineLabel, enginePopup, perApp, openC, shutdown,
+        let stack = NSStackView(views: [engineLabel, enginePopup, setUp, perApp, openC, shutdown,
                                         reset, removeLaunchers, statusLabel])
         stack.orientation = .vertical
         stack.alignment = .leading
@@ -86,6 +89,10 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         let b = NSButton(title: title, target: self, action: action)
         b.bezelStyle = .rounded
         return b
+    }
+
+    @objc private func openSetupWizard() {
+        onSetUp()
     }
 
     @objc private func openCDrive() {

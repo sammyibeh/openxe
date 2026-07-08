@@ -5,7 +5,7 @@ planned, what is explicitly out of scope, and the known risks — so contributor
 where help is welcome and where a "no" is intentional.
 
 The binding scope decisions live in the design spec:
-[`docs/superpowers/specs/2026-07-06-openxe-design.md`](superpowers/specs/2026-07-06-openxe-design.md)
+[`docs/design/specs/2026-07-06-openxe-design.md`](design/specs/2026-07-06-openxe-design.md)
 (§8 Risks, §10 Out of Scope). This roadmap summarizes and links them.
 
 ## Working today

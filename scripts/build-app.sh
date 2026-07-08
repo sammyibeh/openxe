@@ -18,6 +18,10 @@ cp .build/release/OpenXE "$APP/Contents/MacOS/OpenXE"
 cp Resources/Info.plist "$APP/Contents/Info.plist"
 cp Resources/OpenXE.icns "$APP/Contents/Resources/OpenXE.icns"
 cp Resources/LauncherFallback.icns "$APP/Contents/Resources/LauncherFallback.icns"
+# WPF compatibility font: wine-mono fails to load app-embedded FontAwesome
+# resources and crashes in text layout; a system-installed copy resolves it.
+# OFL-1.1 licensed, redistributable (spec §4.2). ~165 KB.
+cp Resources/FontAwesome.ttf "$APP/Contents/Resources/FontAwesome.ttf"
 printf 'APPL????' > "$APP/Contents/PkgInfo"
 
 # Ad-hoc signature only — personal use, no notarization (spec hard constraint).

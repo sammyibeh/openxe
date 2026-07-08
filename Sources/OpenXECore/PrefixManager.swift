@@ -89,6 +89,21 @@ public final class PrefixManager: Sendable {
         try registryAdd(key: #"HKCU\Control Panel\Desktop"#, value: "LogPixels",
                         type: "REG_DWORD", data: "192", env: env)
 
+        // 3a. WPF/.NET font compatibility (spec §4.2). Best-effort — font issues
+        //     must never block a launch. Two wine-mono WPF text-layout bugs bite
+        //     real apps and were verified against New World Scheduler:
+        //     - No "Segoe UI" (WPF's default UI font) exists in the prefix and it
+        //       has no substitute, so the missing-font fallback NULL-derefs in
+        //       MS.Internal.TextFormatting during TextBlock.Measure. Substituting
+        //       Segoe UI (and its weights/symbol variants) onto fonts the Mac
+        //       driver already registers (Verdana/Arial/Webdings) avoids it.
+        //     - wine-mono fails to load app-*embedded* FontAwesome resources and
+        //       NULL-derefs in LineServicesCallbacks.InlineFormat when icon glyphs
+        //       lay out; a system-installed FontAwesome is picked up by family-name
+        //       fallback and resolves it. Verified 2026-07-07: without this NWS
+        //       crashes on every launch; with it, it survives active interaction.
+        installWPFCompatFonts(env: env)
+
         // 4. Link the Mac's real folders into the Windows user profile.
         let home = fm.homeDirectoryForCurrentUser
         let winUser = driveC.appendingPathComponent("users/\(NSUserName())")
@@ -138,6 +153,50 @@ public final class PrefixManager: Sendable {
         guard let contents, !contents.isEmpty else {
             throw PrefixError.monoOrGeckoMissing("\(name) is missing at \(url.path)")
         }
+    }
+
+    /// Installs the bundled WPF-compat font and the font substitutions that
+    /// keep wine-mono's text layout from crashing (see call site). Best-effort:
+    /// any failure is swallowed so it can never block prefix readiness.
+    private func installWPFCompatFonts(env: [String: String]) {
+        let fm = FileManager.default
+        let fontsDir = paths.prefix.appendingPathComponent("drive_c/windows/Fonts")
+        try? fm.createDirectory(at: fontsDir, withIntermediateDirectories: true)
+
+        // Install the bundled FontAwesome so family-name fallback resolves it
+        // when wine-mono cannot load an app's embedded copy.
+        if let src = Bundle.main.url(forResource: "FontAwesome", withExtension: "ttf") {
+            let dst = fontsDir.appendingPathComponent("FontAwesome.ttf")
+            try? fm.removeItem(at: dst)
+            if (try? fm.copyItem(at: src, to: dst)) != nil {
+                regBestEffort([#"HKLM\Software\Microsoft\Windows NT\CurrentVersion\Fonts"#,
+                               "/v", "FontAwesome (TrueType)", "/t", "REG_SZ",
+                               "/d", "FontAwesome.ttf", "/f"], env: env)
+            }
+        }
+
+        // Face-name substitutions. Targets (Verdana/Arial/Webdings) are macOS
+        // system fonts the Mac driver auto-registers into every prefix, so they
+        // are always resolvable. Set both the GDI table (which wine-mono reads
+        // for WPF) and wine's own Replacements table.
+        let subs: [(String, String)] = [
+            ("Segoe UI", "Verdana"), ("Segoe UI Semibold", "Verdana"),
+            ("Segoe UI Light", "Verdana"), ("Segoe UI Semilight", "Verdana"),
+            ("Segoe UI Black", "Verdana"), ("Segoe UI Symbol", "Arial"),
+            ("Segoe MDL2 Assets", "Webdings"), ("Segoe Fluent Icons", "Webdings"),
+            ("Wingdings", "Webdings"),
+        ]
+        for (from, to) in subs {
+            regBestEffort([#"HKLM\Software\Microsoft\Windows NT\CurrentVersion\FontSubstitutes"#,
+                           "/v", from, "/t", "REG_SZ", "/d", to, "/f"], env: env)
+            regBestEffort([#"HKCU\Software\Wine\Fonts\Replacements"#,
+                           "/v", from, "/t", "REG_SZ", "/d", to, "/f"], env: env)
+        }
+    }
+
+    private func regBestEffort(_ args: [String], env: [String: String]) {
+        _ = try? Subprocess.run(engine.activeWineBinary, arguments: ["reg", "add"] + args,
+                                environment: env, timeout: 60, captureOutput: false)
     }
 
     private func registryAdd(key: String, value: String, type: String, data: String,

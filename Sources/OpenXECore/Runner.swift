@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 
 public enum LaunchOutcome: Sendable {
     /// The program launched; `pid` is the wine process, for window activation.
@@ -55,10 +56,22 @@ public final class Runner: Sendable {
         let log = try openLog(sessionNote: exe.lastPathComponent)
         defer { try? log.close() }
 
+        // Launch through a per-exe icon-wrapper .app when one can be built, so
+        // the program shows its own icon and name in the Dock (spec §9.5). Fall
+        // back to the plain wine binary — the wrapper is never a launch blocker.
+        var env = environment
+        let executable: URL
+        if let loader = iconWrapperLoader(for: exe) {
+            executable = loader
+            env["WINELOADER"] = loader.path
+        } else {
+            executable = engine.activeWineBinary
+        }
+
         let process = Process()
-        process.executableURL = engine.activeWineBinary
+        process.executableURL = executable
         process.arguments = [exe.path]
-        process.environment = environment
+        process.environment = env
         process.currentDirectoryURL = exe.deletingLastPathComponent()
         process.standardOutput = log
         process.standardError = log
@@ -82,6 +95,72 @@ public final class Runner: Sendable {
         let result = try Subprocess.run(engine.activeWineBinary, arguments: arguments,
                                         environment: environment, timeout: timeout)
         return result.output
+    }
+
+    // MARK: Dock identity (spec §9.5)
+
+    /// Builds (and caches) a per-exe `.app` whose CFBundleExecutable is a symlink
+    /// to the engine's unix wine loader, with the exe's own icon and product name.
+    /// Launching the program through this bundle gives it a real Dock tile —
+    /// its icon and "New World Scheduler"-style name instead of a generic Wine
+    /// icon. Returns the loader path to exec, or nil if the wrapper can't be
+    /// built (the caller then uses the plain wine binary). Best-effort — the
+    /// Dock icon must never block or fail a launch.
+    ///
+    /// The loader is a *symlink* through `engine/current`, so the wrapper follows
+    /// engine swaps for free; a stale wrapper (pointing at a previous engine) is
+    /// rebuilt. Verified 2026-07-07: NWS presents its own icon and name.
+    private func iconWrapperLoader(for exe: URL) -> URL? {
+        let fm = FileManager.default
+        let loaderTarget = paths.unixWineLoader
+        guard fm.fileExists(atPath: loaderTarget.path) else { return nil }
+
+        let digest = String(SHA256.hash(data: Data(exe.path.utf8))
+            .map { String(format: "%02x", $0) }.joined().prefix(12))
+        let bundle = paths.appBundles.appendingPathComponent("\(digest).app", isDirectory: true)
+        let contents = bundle.appendingPathComponent("Contents", isDirectory: true)
+        let macOS = contents.appendingPathComponent("MacOS", isDirectory: true)
+        let resources = contents.appendingPathComponent("Resources", isDirectory: true)
+        let loader = macOS.appendingPathComponent("wine")
+
+        // Reuse a cached wrapper only if its loader still points at the *current*
+        // engine (an engine swap changes the target).
+        if (try? fm.destinationOfSymbolicLink(atPath: loader.path)) == loaderTarget.path,
+           fm.fileExists(atPath: contents.appendingPathComponent("Info.plist").path) {
+            return loader
+        }
+
+        do {
+            try? fm.removeItem(at: bundle)
+            try fm.createDirectory(at: macOS, withIntermediateDirectories: true)
+            try fm.createDirectory(at: resources, withIntermediateDirectories: true)
+            try fm.createSymbolicLink(atPath: loader.path, withDestinationPath: loaderTarget.path)
+
+            var hasIcon = false
+            let iconURL = resources.appendingPathComponent("exeIcon.icns")
+            if let ico = PEResources.extractPrimaryIconICO(fromFileAt: exe),
+               IconBuilder.makeICNS(fromICO: ico, output: iconURL) {
+                hasIcon = true
+            }
+
+            let name = PEResources.productName(fromFileAt: exe)
+                ?? exe.deletingPathExtension().lastPathComponent
+            var plist: [String: Any] = [
+                "CFBundleName": name,
+                "CFBundleDisplayName": name,
+                "CFBundleIdentifier": "dev.openxe.app.\(digest)",
+                "CFBundleExecutable": "wine",
+                "CFBundlePackageType": "APPL",
+                "CFBundleInfoDictionaryVersion": "6.0",
+            ]
+            if hasIcon { plist["CFBundleIconFile"] = "exeIcon" }
+            let data = try PropertyListSerialization.data(
+                fromPropertyList: plist, format: .xml, options: 0)
+            try data.write(to: contents.appendingPathComponent("Info.plist"))
+            return loader
+        } catch {
+            return nil
+        }
     }
 
     // MARK: log

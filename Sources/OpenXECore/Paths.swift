@@ -30,6 +30,17 @@ public struct OpenXEPaths: Sendable {
         engineCurrent.appendingPathComponent("wine/bin/wineserver")
     }
 
+    /// The unix-side wine loader (the actual process image, not the `bin/wine`
+    /// front-end). A per-exe `.app` symlinks this as its CFBundleExecutable so
+    /// the Windows program presents its own icon and name in the Dock (spec §9.5).
+    public var unixWineLoader: URL {
+        engineCurrent.appendingPathComponent("wine/lib/wine/x86_64-unix/wine")
+    }
+
+    /// Per-exe icon-wrapper `.app` bundles that give running Windows programs a
+    /// real Dock identity. Internal; not user-facing. Spec §9.5.
+    public var appBundles: URL { root.appendingPathComponent("AppBundles", isDirectory: true) }
+
     /// The single persistent Wine prefix — the durable memory. Spec §4.2.
     public var prefix: URL { root.appendingPathComponent("prefix", isDirectory: true) }
 

@@ -3,3 +3,10 @@
 *.xcodeproj
 dist/
 Resources/*.icns
+
+# Editor / IDE
+.idea/
+*.swp
+
+# Local agent/tooling state
+.claude/

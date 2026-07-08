@@ -105,24 +105,36 @@ public final class PrefixManager: Sendable {
         installWPFCompatFonts(env: env)
 
         // 4. Link the Mac's real folders into the Windows user profile.
+        //    Best-effort: folder linking must NEVER abort ensurePrefix, or the
+        //    ready-marker (step 5) is never written, `isReady` stays false, and
+        //    the *next* open wipes and rebuilds the prefix — destroying installed
+        //    apps on every launch. The Windows profile directory name is
+        //    engine-dependent (CrossOver's wineboot creates `users/crossover`,
+        //    Gcenx uses the unix user name), so link into whatever real profiles
+        //    wineboot created rather than assuming `NSUserName()`.
         let home = fm.homeDirectoryForCurrentUser
-        let winUser = driveC.appendingPathComponent("users/\(NSUserName())")
-        for folder in ["Documents", "Downloads", "Desktop"] {
-            let winFolder = winUser.appendingPathComponent(folder)
-            let target = home.appendingPathComponent(folder)
-            guard fm.fileExists(atPath: target.path) else { continue }
-            // Only replace what wineboot freshly created: an empty real directory.
-            var isDir: ObjCBool = false
-            if fm.fileExists(atPath: winFolder.path, isDirectory: &isDir) {
-                let isSymlink = (try? fm.destinationOfSymbolicLink(atPath: winFolder.path)) != nil
-                if isSymlink { continue } // already linked
-                guard isDir.boolValue,
-                      let contents = try? fm.contentsOfDirectory(atPath: winFolder.path),
-                      contents.isEmpty
-                else { continue } // never delete user data
-                try fm.removeItem(at: winFolder)
+        let usersDir = driveC.appendingPathComponent("users")
+        let profiles = ((try? fm.contentsOfDirectory(atPath: usersDir.path)) ?? [])
+            .filter { $0 != "Public" && !$0.hasPrefix(".") }
+        for profile in profiles {
+            let winUser = usersDir.appendingPathComponent(profile)
+            for folder in ["Documents", "Downloads", "Desktop"] {
+                let winFolder = winUser.appendingPathComponent(folder)
+                let target = home.appendingPathComponent(folder)
+                guard fm.fileExists(atPath: target.path) else { continue }
+                // Only replace what wineboot freshly created: an empty real directory.
+                var isDir: ObjCBool = false
+                if fm.fileExists(atPath: winFolder.path, isDirectory: &isDir) {
+                    let isSymlink = (try? fm.destinationOfSymbolicLink(atPath: winFolder.path)) != nil
+                    if isSymlink { continue } // already linked
+                    guard isDir.boolValue,
+                          let contents = try? fm.contentsOfDirectory(atPath: winFolder.path),
+                          contents.isEmpty
+                    else { continue } // never delete user data
+                    try? fm.removeItem(at: winFolder)
+                }
+                try? fm.createSymbolicLink(atPath: winFolder.path, withDestinationPath: target.path)
             }
-            try fm.createSymbolicLink(atPath: winFolder.path, withDestinationPath: target.path)
         }
 
         // 5. Ready marker records the creating engine id (the rebuild key).

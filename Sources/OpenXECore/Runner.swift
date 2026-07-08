@@ -110,6 +110,14 @@ public final class Runner: Sendable {
     /// The loader is a *symlink* through `engine/current`, so the wrapper follows
     /// engine swaps for free; a stale wrapper (pointing at a previous engine) is
     /// rebuilt. Verified 2026-07-07: NWS presents its own icon and name.
+    ///
+    /// The wrapper's `CFBundleExecutable` (the loader file) is named after the
+    /// program — *not* `wine` — because the Dock/menu-bar identity of a
+    /// wine-exec'd process falls back to the executable's file name
+    /// (`argv[0]` / `NSProcessInfo.processName`) on any surface that can't read
+    /// the bundle. Naming it `wine` is exactly what put "wine" in the Dock;
+    /// naming it after the app closes that gap while `CFBundleName` drives the
+    /// primary label.
     private func iconWrapperLoader(for exe: URL) -> URL? {
         let fm = FileManager.default
         let loaderTarget = paths.unixWineLoader
@@ -117,14 +125,24 @@ public final class Runner: Sendable {
 
         let digest = String(SHA256.hash(data: Data(exe.path.utf8))
             .map { String(format: "%02x", $0) }.joined().prefix(12))
+
+        // Human-readable label (Dock tile, menu bar) — the exe's PE ProductName,
+        // falling back to its file-name stem.
+        let displayName = PEResources.productName(fromFileAt: exe)
+            ?? exe.deletingPathExtension().lastPathComponent
+        // File-name-safe form for the loader / CFBundleExecutable.
+        let execName = Self.sanitizedExecutableName(displayName)
+
         let bundle = paths.appBundles.appendingPathComponent("\(digest).app", isDirectory: true)
         let contents = bundle.appendingPathComponent("Contents", isDirectory: true)
         let macOS = contents.appendingPathComponent("MacOS", isDirectory: true)
         let resources = contents.appendingPathComponent("Resources", isDirectory: true)
-        let loader = macOS.appendingPathComponent("wine")
+        let loader = macOS.appendingPathComponent(execName)
 
         // Reuse a cached wrapper only if its loader still points at the *current*
-        // engine (an engine swap changes the target).
+        // engine (an engine swap changes the target) and carries the current
+        // name (a renamed exe/ProductName changes `execName`, so the old loader
+        // file won't be found → rebuild).
         if (try? fm.destinationOfSymbolicLink(atPath: loader.path)) == loaderTarget.path,
            fm.fileExists(atPath: contents.appendingPathComponent("Info.plist").path) {
             return loader
@@ -143,13 +161,11 @@ public final class Runner: Sendable {
                 hasIcon = true
             }
 
-            let name = PEResources.productName(fromFileAt: exe)
-                ?? exe.deletingPathExtension().lastPathComponent
             var plist: [String: Any] = [
-                "CFBundleName": name,
-                "CFBundleDisplayName": name,
+                "CFBundleName": displayName,
+                "CFBundleDisplayName": displayName,
                 "CFBundleIdentifier": "dev.openxe.app.\(digest)",
-                "CFBundleExecutable": "wine",
+                "CFBundleExecutable": execName,
                 "CFBundlePackageType": "APPL",
                 "CFBundleInfoDictionaryVersion": "6.0",
             ]
@@ -161,6 +177,29 @@ public final class Runner: Sendable {
         } catch {
             return nil
         }
+    }
+
+    /// A file-name-safe form of the program name for the wrapper's
+    /// `CFBundleExecutable`. Spaces are kept (macOS allows them and they render
+    /// correctly in the Dock/menu bar); path separators (`/`, `:`) and control
+    /// characters become spaces; runs of whitespace collapse; the result is
+    /// trimmed, length-capped, and never empty (so it is never accidentally
+    /// `wine` — the value falls back only to `app`).
+    static func sanitizedExecutableName(_ name: String) -> String {
+        var chars = String.UnicodeScalarView()
+        for s in name.unicodeScalars {
+            if s == "/" || s == ":" || s.value < 0x20 {
+                chars.append(" ")
+            } else {
+                chars.append(s)
+            }
+        }
+        var out = String(chars).trimmingCharacters(in: .whitespaces)
+        while out.contains("  ") { out = out.replacingOccurrences(of: "  ", with: " ") }
+        if out.count > 60 {
+            out = String(out.prefix(60)).trimmingCharacters(in: .whitespaces)
+        }
+        return out.isEmpty ? "app" : out
     }
 
     // MARK: log

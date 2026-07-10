@@ -179,6 +179,8 @@ What is genuinely prefix-global (and therefore **not** made per-app): the active
 
 **Wizard (Shell §4.4).** A four-step first-run flow grows the first-run progress window: (1) Welcome + a prominent "unofficial, not affiliated with New World Scheduler / nwscheduler.com" disclaimer and links to the vendor download page + Terms; (2) Set up the Windows environment (reuse EngineManager/PrefixManager with friendly progress); (3) Download & install NWS — show the detected latest version, progress, silent install, and a "choose a specific version" advanced pin; (4) Done — launch NWS and note it now appears in Applications/Launchpad. Failures (no network, rate-limit → fallback, install error) surface as plain-language inline messages. Idempotent/resumable: re-running never wipes an existing NWS.
 
+**Done step is an explicit two-action choice (2026-07-10).** Default **Launch New World Scheduler** (Return) launches NWS and closes the wizard; secondary **Finish Without Launching** (Esc) just closes it. Both paths run the same completion side effect — the Launchpad/Spotlight launcher (§9.3) is ensured, awaited before the window closes (the app terminates with the wizard) — so the only difference is whether NWS starts now. A failed launch keeps the wizard open with an inline message.
+
 **Dependencies:** EngineManager (active wine loader + env), Foundation, `URLSession`. UI: AppKit. No new third-party dependency.
 
 ## 5. Data Flow — double-click an `.exe`

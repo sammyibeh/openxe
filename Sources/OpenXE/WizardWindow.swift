@@ -27,6 +27,7 @@ final class WizardWindowController: NSObject, NSWindowDelegate {
     private let statusLabel = NSTextField(wrappingLabelWithString: "")
     private let progressBar = NSProgressIndicator()
     private let backButton = NSButton()
+    private let secondaryButton = NSButton()
     private let primaryButton = NSButton()
 
     private var step: Step = .welcome
@@ -76,13 +77,20 @@ final class WizardWindowController: NSObject, NSWindowDelegate {
         backButton.target = self
         backButton.action = #selector(backTapped)
 
+        // Secondary action, used only on the final step ("Finish Without Launching").
+        secondaryButton.bezelStyle = .rounded
+        secondaryButton.keyEquivalent = "\u{1b}" // Esc — the close-without-launching path
+        secondaryButton.target = self
+        secondaryButton.action = #selector(secondaryTapped)
+        secondaryButton.isHidden = true
+
         primaryButton.title = "Continue"
         primaryButton.bezelStyle = .rounded
         primaryButton.keyEquivalent = "\r"
         primaryButton.target = self
         primaryButton.action = #selector(primaryTapped)
 
-        let buttonRow = NSStackView(views: [backButton, NSView(), primaryButton])
+        let buttonRow = NSStackView(views: [backButton, NSView(), secondaryButton, primaryButton])
         buttonRow.orientation = .horizontal
         buttonRow.spacing = 8
 
@@ -149,6 +157,7 @@ final class WizardWindowController: NSObject, NSWindowDelegate {
         working = busy
         progressBar.isHidden = !busy
         primaryButton.isEnabled = !busy
+        secondaryButton.isEnabled = !busy
         backButton.isEnabled = !busy && step != .welcome
         if busy {
             progressBar.isIndeterminate = indeterminate
@@ -179,8 +188,13 @@ final class WizardWindowController: NSObject, NSWindowDelegate {
         case .welcome: renderEnvironment()
         case .environment: environmentPrimary()
         case .nws: nwsPrimary()
-        case .done: finish()
+        case .done: launchAndFinish()
         }
+    }
+
+    @objc private func secondaryTapped() {
+        guard step == .done, !working else { return }
+        finishWithoutLaunching()
     }
 
     // MARK: Step 1 — Welcome + disclaimer (spec §4.4)
@@ -472,48 +486,75 @@ final class WizardWindowController: NSObject, NSWindowDelegate {
             "The first launch may take a few seconds. New World Scheduler manages its own "
             + "60-day trial and activation from inside the app."))
 
-        let launch = NSButton(title: "Launch New World Scheduler", target: self,
-                              action: #selector(launchNWS))
-        launch.bezelStyle = .rounded
-        bodyStack.addArrangedSubview(launch)
+        secondaryButton.title = "Finish Without Launching"
+        secondaryButton.isHidden = false
+        secondaryButton.isEnabled = true
 
-        primaryButton.title = "Finish"
+        primaryButton.title = "Launch New World Scheduler"
         primaryButton.isEnabled = true
     }
 
-    @objc private func launchNWS() {
+    /// Primary path: launch NWS, then close the wizard. On failure the wizard
+    /// stays open with a plain-language message so the user can retry or finish
+    /// without launching.
+    private func launchAndFinish() {
         guard let exe = nws.installedExe else {
             setStatus("New World Scheduler could not be found.", isError: true)
             return
         }
+        setBusy(true)
         setStatus("Launching New World Scheduler…")
         let runner = self.runner
-        let fallbackIcon = Bundle.main.url(forResource: "LauncherFallback", withExtension: "icns")
         Task {
+            await self.ensureLauncher(for: exe)
             do {
                 let outcome = try await Task.detached(priority: .userInitiated) {
                     try runner.launch(exe: exe)
                 }.value
                 switch outcome {
                 case .launched:
-                    // Make it appear in Spotlight/Launchpad (spec §9.3).
-                    await Task.detached(priority: .utility) {
-                        let launchers = LauncherManager()
-                        if !launchers.launcherExists(for: exe) {
-                            _ = try? launchers.createLauncher(for: exe, fallbackIcon: fallbackIcon)
-                        }
-                    }.value
-                    self.setStatus("New World Scheduler is starting.")
+                    self.finish()
                 case .refused(let verdict):
+                    self.setBusy(false)
                     self.setStatus(verdict.explanation, isError: true)
                 case .crashed(let code, _):
+                    self.setBusy(false)
                     self.setStatus("New World Scheduler quit unexpectedly (code \(code)).",
                                    isError: true)
                 }
             } catch {
+                self.setBusy(false)
                 self.setStatus(error.localizedDescription, isError: true)
             }
         }
+    }
+
+    /// Secondary path: close the wizard without starting NWS. Setup completion
+    /// is identical to the launch path — only the launch itself is skipped.
+    private func finishWithoutLaunching() {
+        guard let exe = nws.installedExe else {
+            finish()
+            return
+        }
+        setBusy(true)
+        Task {
+            await self.ensureLauncher(for: exe)
+            self.finish()
+        }
+    }
+
+    /// Setup-completion side effect shared by both final-step paths: make NWS
+    /// appear in Spotlight/Launchpad (spec §9.3). Best-effort, but MUST be
+    /// awaited before the window closes — the app terminates once the wizard
+    /// goes away, and a fire-and-forget task would die with it.
+    private func ensureLauncher(for exe: URL) async {
+        let fallbackIcon = Bundle.main.url(forResource: "LauncherFallback", withExtension: "icns")
+        await Task.detached(priority: .utility) {
+            let launchers = LauncherManager()
+            if !launchers.launcherExists(for: exe) {
+                _ = try? launchers.createLauncher(for: exe, fallbackIcon: fallbackIcon)
+            }
+        }.value
     }
 
     private func finish() {

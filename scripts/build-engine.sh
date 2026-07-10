@@ -77,6 +77,8 @@ BREW_DEPS=(
   bison mingw-w64 pkgconf              # PE-side cross toolchain + parser + pkgconfig
   molten-vk vulkan-loader              # CrossOver win32u/vulkan.c needs SONAME_LIBVULKAN
                                        # even in a productivity build (TU is unconditional)
+  cmake                                # builds the bundled freetype (its autotools
+                                       # configure is not generated in the CX tree)
 )
 # NOTE: gnutls is intentionally NOT installed (TLS inside Windows apps is
 # degraded but unused by the NWS target; arm64 Homebrew gnutls can't link into
@@ -146,6 +148,53 @@ fetch_and_verify() {
   echo "$wine_src" > "$WORK/.wine_src_path"
 }
 
+# ---- bundled freetype, built x86_64 first ----------------------------------
+# WHY (incident 2026-07-09, this machine): Wine's configure link-tests
+# -lfreetype with the forced x86_64 compiler, but Homebrew freetype on Apple
+# Silicon is arm64-only ("found architecture 'arm64', required architecture
+# 'x86_64'"), so detection hard-fails. CrossOver's own cxbuild solves this by
+# building the freetype BUNDLED in the source tree (sources/freetype) before
+# Wine; mirror that: compile it x86_64 into a work-dir prefix and hand it to
+# Wine's configure via FREETYPE_CFLAGS/FREETYPE_LIBS. freetype stays REQUIRED
+# (§8 FailFast incident) — no --without-freetype fallback.
+FT_PREFIX="$WORK/deps/freetype"
+build_freetype() {
+  local wine_src; wine_src=$(cat "$WORK/.wine_src_path")
+  local ft_src; ft_src="$(dirname "$wine_src")/freetype"
+  [ -x "$ft_src/configure" ] || { echo "error: bundled freetype not found at $ft_src" >&2; exit 5; }
+  local ft_build="$WORK/build-freetype"
+  rm -rf "$ft_build" "$FT_PREFIX"; mkdir -p "$ft_build"
+  # CMake, not autotools: the CX tree ships freetype as a git checkout with no
+  # .git, an EMPTY subprojects/dlg (toplevel.mk `setup` fails trying to `git
+  # submodule update` it), and no generated builds/unix/configure — autotools
+  # would need autoconf+automake+libtool plus autogen. The tree's CMakeLists
+  # needs none of that. Every optional codec is pinned OFF so detection cannot
+  # latch onto an arm64 Homebrew library the x86_64 link would reject;
+  # FT_DISABLE_ZLIB selects freetype's internal zlib copy (same reason).
+  ( cd "$ft_build" && cmake "$ft_src" \
+      -DCMAKE_BUILD_TYPE=Release \
+      -DCMAKE_OSX_ARCHITECTURES=x86_64 \
+      -DCMAKE_INSTALL_PREFIX="$FT_PREFIX" \
+      -DBUILD_SHARED_LIBS=ON \
+      -DFT_DISABLE_ZLIB=TRUE -DFT_DISABLE_BZIP2=TRUE \
+      -DFT_DISABLE_PNG=TRUE -DFT_DISABLE_HARFBUZZ=TRUE \
+      -DFT_DISABLE_BROTLI=TRUE \
+      && cmake --build . -j"$(sysctl -n hw.ncpu)" \
+      && cmake --install . )
+  lipo "$FT_PREFIX/lib/libfreetype.6.dylib" -verify_arch x86_64 \
+    || { echo "error: built libfreetype.6.dylib is not x86_64" >&2; exit 5; }
+  # Absolute install id so HOST build tools that link freetype directly
+  # (tools/sfnt2fon, run during make to render the bitmap .fon fonts) can
+  # load it at build time; CMake's default @rpath id — and a bare-name id —
+  # both abort sfnt2fon with dyld "no such file". The engine copy gets a
+  # bare-soname id at stage time instead; the runtime dlopen (win32u ->
+  # SONAME_LIBFREETYPE, pinned bare via ac_cv_lib_soname_freetype) resolves
+  # through DYLD_FALLBACK_LIBRARY_PATH=<engine>/wine/lib (spec §4.3)
+  # regardless of the file's id.
+  install_name_tool -id "$FT_PREFIX/lib/libfreetype.6.dylib" "$FT_PREFIX/lib/libfreetype.6.dylib"
+  echo "Built bundled freetype (x86_64) at: $FT_PREFIX"
+}
+
 # ---- configure + build (new-WoW64, NOT the obsolete --enable-win32on64) ----
 build_wine() {
   local wine_src; wine_src=$(cat "$WORK/.wine_src_path")
@@ -183,6 +232,9 @@ build_wine() {
       CC="clang -arch x86_64" CXX="clang++ -arch x86_64" \
       ac_cv_lib_soname_vulkan="libvulkan.1.dylib" \
       ac_cv_lib_soname_MoltenVK="libMoltenVK.dylib" \
+      FREETYPE_CFLAGS="-I$FT_PREFIX/include/freetype2" \
+      FREETYPE_LIBS="-L$FT_PREFIX/lib -lfreetype" \
+      ac_cv_lib_soname_freetype="libfreetype.6.dylib" \
       --prefix="$STAGE/wine" \
       --build=x86_64-apple-darwin --host=x86_64-apple-darwin \
       --enable-archs=i386,x86_64 \
@@ -205,6 +257,12 @@ stage_engine() {
   # EngineManager expects <engineDir>/wine/{bin,lib,share}. `make install`
   # with --prefix="$STAGE/wine" already produced that. Emit the descriptor so
   # the engine is self-describing and selectable as "Wine-Crossover (self-built)".
+  # Ship the x86_64 freetype the build was configured against — win32u dlopens
+  # the bare soname from <engine>/wine/lib at runtime (see the BREW_DEPS note).
+  cp "$FT_PREFIX/lib/libfreetype.6.dylib" "$STAGE/wine/lib/"
+  # Strip the build-machine path from the shipped copy's install id (the
+  # absolute id is only needed at build time; see build_freetype).
+  install_name_tool -id libfreetype.6.dylib "$STAGE/wine/lib/libfreetype.6.dylib"
   local sha; sha="$(shasum -a 256 "$WORK/$CX_TARBALL" | awk '{print $1}')"
   cat > "$STAGE/descriptor.json" <<JSON
 {
@@ -213,7 +271,7 @@ stage_engine() {
   "version" : "crossover-${CX_VERSION}",
   "url" : "${CX_URL}",
   "sha256" : "${sha}",
-  "wineBinaryName" : "wine64"
+  "wineBinaryName" : "wine"
 }
 JSON
   printf 'crossover-%s\n' "$CX_VERSION" > "$STAGE/version"
@@ -227,6 +285,6 @@ JSON
 case "${1:-all}" in
   --deps)   bootstrap_deps ;;
   --verify) fetch_and_verify ;;
-  all)      guard_disk; bootstrap_deps; fetch_and_verify; build_wine; stage_engine ;;
+  all)      guard_disk; bootstrap_deps; fetch_and_verify; build_freetype; build_wine; stage_engine ;;
   *) echo "usage: build-engine.sh [--deps|--verify]"; exit 1 ;;
 esac

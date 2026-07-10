@@ -1,6 +1,6 @@
 # OpenXE
 
-**Run Windows `.exe` productivity software on macOS by double-clicking it.**
+**Run New World Scheduler on macOS — a purpose-built, open-source appliance.**
 
 > **Unofficial.** OpenXE is an independent, open-source project. It is **not
 > affiliated with, endorsed by, or connected to New World Scheduler or
@@ -9,17 +9,20 @@
 > license and [terms](https://nwscheduler.com/terms-and-conditions/); OpenXE never
 > bundles, mirrors, or redistributes it.
 
-OpenXE is a lean (~0.5 MB) macOS app that registers itself as the system handler
-for `.exe` files. Double-click a Windows program in Finder and it runs — through
-an unmodified [Wine](https://www.winehq.org/) engine that OpenXE downloads and
-manages for you. There is no library window, no launcher grid, no menu-bar item.
-It is faceless by design: it does one thing, weighs almost nothing, and stays out
-of your way.
+OpenXE is a lean (~0.5 MB) macOS app built for one job: getting **New World
+Scheduler (NWS)** — a Windows-only program — running on a Mac. On first launch a
+guided wizard prepares a managed, unmodified [Wine](https://www.winehq.org/)
+environment and downloads NWS from its official source; after that, NWS opens like
+a native app. OpenXE is **not a general Wine front-end**: no library window, no
+launcher grid, no gaming stack. It does register as the macOS handler for `.exe`
+files, so other Windows productivity programs can run through it too — but NWS is
+the target it is built, tuned, and tested for.
 
-> **Status:** working for its first real target. New World Scheduler (NWS) 8.1 and
-> 8.2 launch and run under software rendering, with per-app settings and font
-> handling in place. GPU/maps acceleration is planned but not yet built — see
-> [Current status](#current-status) and [`docs/roadmap.md`](docs/roadmap.md).
+> **Status:** working end-to-end. The first-run wizard downloads the engine and
+> installs New World Scheduler 8.1/8.2, which runs under software rendering, with
+> per-app settings and font handling in place. GPU/maps acceleration is planned
+> but not yet built — see [Current status](#current-status) and
+> [`docs/roadmap.md`](docs/roadmap.md).
 
 ---
 
@@ -37,19 +40,28 @@ Mac build. The options for running it on a Mac are:
   stacks that are irrelevant to a scheduling app.
 
 OpenXE takes the CrossOver idea — *a thin, native runner over a managed Wine
-prefix* — and strips it to the essential: **double-click an `.exe`, it runs.**
+prefix* — and strips it to one appliance: **a few guided clicks and NWS runs.**
 No library to curate, no bottles to configure by hand, no gaming stack. It is the
-simplest possible way to run NWS (and apps like it) on a Mac, and it is free and
-open source.
+simplest possible way to run NWS on a Mac, and it is free and open source. The
+engine itself follows the same idea: OpenXE builds its own Wine-Crossover engine
+from CodeWeavers' published LGPL sources (see
+[Engine from source](#engine-from-source)), rather than depending on a commercial
+product.
 
 ## Current status
 
 **Works today**
 
+- **Guided first-run setup wizard** — welcome/disclaimer → one-time Windows
+  environment setup (engine download, checksum-verified and resumable) → NWS
+  download & install → an explicit launch-or-finish choice. Plain language
+  throughout; the user never needs to know what "Wine" or a "prefix" is.
+- **NWS fetcher** — downloads the NWS installer at runtime from the vendor's
+  official GitHub release (with the vendor's own endpoint as fallback),
+  size-verified against the release API, version-pinnable, run once and then
+  removed. NWS is never bundled, mirrored, or redistributed.
 - Double-click an `.exe` in Finder → it launches via OpenXE (LaunchServices
   handler for `com.microsoft.windows-executable`).
-- First-run engine setup with a visible progress window; checksum-verified,
-  resumable download; no manual Wine compilation required.
 - One persistent Wine prefix (durable registry + `C:` drive), Wine Mono + Gecko,
   Retina/HiDPI mode, Mac `Documents`/`Downloads`/`Desktop` linked into Windows.
 - **New World Scheduler 8.1 and 8.2** launch and run their main scheduler UI under
@@ -111,8 +123,25 @@ components, one persistent prefix:
 - **Per-app config** — Windows version + DLL overrides per `.exe`, persisted in the
   shared prefix using Wine's native `AppDefaults` mechanism (no separate bottles).
 
-The app bundle stays under a **5 MB budget**; the ~1.7 GB Wine engine lives outside
-the bundle and does not count against it.
+The app bundle stays under a **5 MB budget**; the Wine engine lives outside the
+bundle and does not count against it.
+
+### Engine from source
+
+OpenXE owns its engine story instead of depending on a commercial build:
+
+- `make engine` ([`scripts/build-engine.sh`](scripts/build-engine.sh)) builds a
+  **Wine-Crossover engine from CodeWeavers' published LGPL sources** — x86_64,
+  new-WoW64, productivity-focused (no gaming stack), with the CX-bundled freetype
+  compiled x86_64 so font rendering works on Apple Silicon build machines. Needs
+  ~10–15 GB of working space.
+- `make package-engine` ([`scripts/package-engine.sh`](scripts/package-engine.sh))
+  tars a built engine, computes its SHA-256, and prints a ready-to-paste
+  `EngineDescriptor` for hosting it as a release asset.
+
+Until the self-built engine asset is hosted, first-run installs the pinned,
+checksum-verified stock build in `EngineCatalog` — the wizard flow is identical
+either way. Details: [`docs/distribution.md`](docs/distribution.md).
 
 ### The Rosetta 2 hedge (honest risk)
 
@@ -126,9 +155,9 @@ have solved this — we designed so that solving it later is a drop-in, not a re
 
 ## Quickstart
 
-**Just want to run it?** See [`INSTALL.md`](INSTALL.md) — download the app, clear the
-Gatekeeper quarantine, and double-click an `.exe`. First run downloads the engine
-(~1.7 GB, one time).
+**Just want to run it?** See [`INSTALL.md`](INSTALL.md) — download the app, clear
+the Gatekeeper quarantine, and open it. The setup wizard takes it from there:
+one-time engine download (~1.7 GB), then NWS download and install, then launch.
 
 **Building from source:**
 
@@ -137,8 +166,26 @@ git clone <this-repo> openxe && cd openxe
 make app        # swift build (release) + ad-hoc sign + install to /Applications
 ```
 
-Then double-click any `.exe` in Finder. If another app currently owns `.exe` files,
+Then open OpenXE.app and follow the wizard. Any other `.exe` also runs by
+double-clicking it in Finder; if another app currently owns `.exe` files,
 Get Info on any `.exe` → *Open With* → OpenXE → *Change All*.
+
+**Developer tooling** (`make help` for the full list):
+
+```sh
+make test            # unit + gated integration tests
+make engine          # build the Wine-Crossover engine from LGPL source
+make package-engine  # tarball + SHA-256 + EngineDescriptor for a built engine
+make fresh           # wipe all OpenXE state back to a true first-run
+```
+
+`make fresh` (scripts/reset-fresh.sh) reproduces the fresh-device experience at
+will: it removes the engine, prefix (including the NWS install), generated
+launchers, the defaults domain, and logs — never your real `Documents`/`Downloads`/
+`Desktop`. Flags go through `ARGS` (quote to pass several):
+`make fresh ARGS="--dry-run"` previews, `--yes` skips the prompt, and
+`--quarantine /path/to/OpenXE.app` re-arms Gatekeeper on that copy so the next
+open shows the genuine first-open prompt.
 
 See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the full developer setup, the module
 map, how the engine is built from source, and how to add support for a new app.

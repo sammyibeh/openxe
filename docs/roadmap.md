@@ -10,10 +10,14 @@ The binding scope decisions live in the design spec:
 
 ## Working today
 
+- Guided first-run wizard: engine download + NWS fetch/install + an explicit
+  launch-or-finish choice, end to end, no Wine knowledge required.
 - Double-click `.exe` → runs, first-run engine download, persistent prefix,
   Wine Mono + Gecko, per-app settings, font provisioning, native Dock identity,
   multi-engine swap. See the README for the full list.
 - New World Scheduler 8.1 and 8.2 main UI, under software rendering.
+- Developer fresh-reset tool (`make fresh`) to reproduce the first-run experience
+  at will, including re-arming Gatekeeper on an app copy (`--quarantine`).
 
 ## Planned — GPU / maps acceleration
 

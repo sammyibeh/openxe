@@ -76,9 +76,12 @@ own the build of; OpenXE itself stays MIT and never links or patches Wine.
 
 ## Deferred (follow-up, not done this session)
 
-- **Publishing the ~1.7 GB engine Release asset** is intentionally **not** done here
-  (disk/bandwidth). Until it is, first-run downloads the pinned upstream Gcenx build
-  (the current `EngineCatalog.default`), which is already hosted and checksum-pinned.
+- **Publishing the self-built engine Release asset** is intentionally **not** done
+  yet. The Wine-Crossover engine has been built and packaged locally
+  (`make engine` + `make package-engine` produce a ~280 MB `.tar.xz` plus its
+  descriptor), but the asset is not hosted. Until it is, first-run downloads the
+  pinned upstream Gcenx build (the current `EngineCatalog.default`), which is
+  already hosted and checksum-pinned.
 - **Signing/notarization** of the app for distribution is out of scope by design —
   OpenXE is ad-hoc signed; end users clear the quarantine once (see
   [`INSTALL.md`](../INSTALL.md)).
@@ -91,5 +94,5 @@ own the build of; OpenXE itself stays MIT and never links or patches Wine.
 | Install from a pre-downloaded tarball (`installLocalArchive`) | Implemented & tested |
 | Point first-run at a GitHub Release asset (data-only catalog change) | Supported, one-line change |
 | `make package-engine` — tarball + checksum + descriptor for a built engine | Implemented (this session) |
-| Reproducible engine build from LGPL source (`build-engine.sh`) | Present |
-| Actually hosting the 1.7 GB engine asset | **Deferred** (follow-up) |
+| Reproducible engine build from LGPL source (`build-engine.sh`) | Implemented (x86_64 new-WoW64; CX-bundled freetype built x86_64) |
+| Actually hosting the self-built engine asset | **Deferred** (follow-up) |

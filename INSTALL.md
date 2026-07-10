@@ -54,24 +54,32 @@ Then double-click the app normally.
 Either option is a **one-time** step. It removes the "unknown developer" block; it
 does not disable Gatekeeper system-wide.
 
-## 3. First run — the engine download (~1.7 GB, one time)
+## 3. First run — the setup wizard
 
-The **first** time OpenXE runs a program, it downloads and installs the Wine engine
-(~1.7 GB) into `~/Library/Application Support/OpenXE/engine/`. A progress window
-shows the download; it is **checksum-verified** and **resumable**, so a dropped
-connection continues instead of restarting.
+Open **OpenXE.app**. If New World Scheduler isn't installed yet, a guided setup
+wizard walks you through everything:
 
-- This happens **once.** Later launches reuse the installed engine and are fast.
-- You do **not** compile Wine — the engine is prebuilt and just downloaded.
-- The first program launch after the engine installs also does a one-time prefix
-  setup (Wine Mono, Gecko, fonts). Subsequent launches are near-instant.
+1. **Welcome & disclaimer** — what OpenXE is (and that it's unofficial).
+2. **Windows environment** — a one-time download (~1.7 GB) into
+   `~/Library/Application Support/OpenXE/`. It is **checksum-verified** and
+   **resumable**, so a dropped connection continues instead of restarting; a
+   one-time environment setup (Wine Mono, Gecko, fonts) follows.
+3. **New World Scheduler** — the wizard fetches the NWS installer from its
+   official source (you can pick the version) and installs it.
+4. **Done** — launch NWS right away, or finish without launching. NWS now appears
+   in `/Applications/OpenXE Apps/` with its own icon, in Spotlight and Launchpad.
 
-> Big download, no visible progress? The download resumes on relaunch — you won't
-> lose what already came down.
+- The big download happens **once.** Later launches reuse the installed engine.
+- You do **not** compile anything — the engine is prebuilt and just downloaded.
 
-## 4. Run a `.exe`
+> Big download interrupted? It resumes on relaunch — you won't lose what already
+> came down.
 
-**Double-click any `.exe` in Finder.** It runs through OpenXE.
+## 4. Run any other `.exe`
+
+OpenXE is purpose-built for New World Scheduler, but it registers as the macOS
+handler for `.exe` files: **double-click any `.exe` in Finder** and it runs
+through OpenXE.
 
 If double-clicking opens something else (another Wine app may have claimed `.exe`
 files), set OpenXE as the handler **once**:

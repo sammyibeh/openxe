@@ -4,7 +4,7 @@ Spec §7. Run before calling a build done. Record date and engine version.
 
 ## Setup
 - [ ] `scripts/build-app.sh` completes: builds, signs ad-hoc, stays under 5 MB, registers with LaunchServices
-- [ ] Fresh state (`Reset Environment` or delete `~/Library/Application Support/OpenXE`): first `.exe` launch shows the one-time setup progress window and completes
+- [ ] Fresh state (`make fresh`, i.e. `scripts/reset-fresh.sh` — preview with `make fresh ARGS=--dry-run`): first `.exe` launch shows the one-time setup progress window and completes
 
 ## Association
 - [ ] Double-clicking a `.exe` in Finder launches it via OpenXE (if another handler owns `.exe`: Get Info → Open With → OpenXE → Change All, once)

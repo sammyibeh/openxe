@@ -2,7 +2,7 @@
 # Run `make` (or `make help`) for the list.
 
 .DEFAULT_GOAL := help
-.PHONY: help build test app engine package-engine clean
+.PHONY: help build test app engine package-engine fresh clean
 
 help: ## Show this help
 	@echo "OpenXE make targets:"
@@ -23,6 +23,9 @@ engine: ## Build a Wine-Crossover engine from LGPL source (needs ~10-15 GB free;
 
 package-engine: ## Tar a built engine + compute SHA-256 + print an EngineDescriptor (scripts/package-engine.sh)
 	scripts/package-engine.sh
+
+fresh: ## Wipe all OpenXE state back to first-run (scripts/reset-fresh.sh; preview with ARGS=--dry-run)
+	scripts/reset-fresh.sh $(ARGS)
 
 clean: ## Remove SwiftPM build products and dist/
 	rm -rf .build dist

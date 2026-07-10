@@ -199,8 +199,19 @@ if [ -d "$OPENXE_ROOT" ]; then
   rm -rf "$OPENXE_ROOT"
 fi
 
-# Tolerate "domain not found".
-defaults delete "$DEFAULTS_DOMAIN" >/dev/null 2>&1 || true
+# Tolerate "domain not found". `defaults delete` can leave (or refuse to
+# touch) an empty-but-present domain: cfprefsd rewrites an empty plist instead
+# of unlinking it, `defaults read` then sees {} / exit 0 while `defaults
+# delete` says "not found" / exit 1 — an unwinnable state via the CLI alone.
+# So delete via cfprefsd first, and only if the domain still reads as present
+# (i.e. it is key-empty), remove the leftover plist file directly.
+if defaults read "$DEFAULTS_DOMAIN" >/dev/null 2>&1; then
+  log "Removing defaults domain $DEFAULTS_DOMAIN ..."
+  defaults delete "$DEFAULTS_DOMAIN" >/dev/null 2>&1 || true
+  if defaults read "$DEFAULTS_DOMAIN" >/dev/null 2>&1; then
+    rm -f "$HOME/Library/Preferences/$DEFAULTS_DOMAIN.plist"
+  fi
+fi
 
 if [ -d "$OPENXE_LOGS" ]; then
   log "Removing $OPENXE_LOGS ..."

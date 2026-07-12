@@ -167,7 +167,15 @@ public final class Runner: Sendable {
         // File-name-safe form for the loader / CFBundleExecutable.
         let execName = Self.sanitizedExecutableName(displayName)
 
-        let bundle = paths.appBundles.appendingPathComponent("\(digest).app", isDirectory: true)
+        // The .app directory is *named after the program*, nested under the
+        // digest: LaunchServices derives an unregistered bundle's display name
+        // from its directory name (CFBundleName/CFBundleDisplayName in the
+        // Info.plist do not override it), and the Dock renders that — a
+        // digest-named bundle put a raw "ffee102d6c83" tile in the Dock.
+        // The digest parent keeps wrappers unique per exe path.
+        let bundle = paths.appBundles
+            .appendingPathComponent(digest, isDirectory: true)
+            .appendingPathComponent("\(execName).app", isDirectory: true)
         let contents = bundle.appendingPathComponent("Contents", isDirectory: true)
         let macOS = contents.appendingPathComponent("MacOS", isDirectory: true)
         let resources = contents.appendingPathComponent("Resources", isDirectory: true)
@@ -184,6 +192,9 @@ public final class Runner: Sendable {
 
         do {
             try? fm.removeItem(at: bundle)
+            // Drop a pre-display-name wrapper (`AppBundles/<digest>.app`) so the
+            // hex-named bundle can't linger beside the fixed one.
+            try? fm.removeItem(at: paths.appBundles.appendingPathComponent("\(digest).app"))
             try fm.createDirectory(at: macOS, withIntermediateDirectories: true)
             try fm.createDirectory(at: resources, withIntermediateDirectories: true)
             try fm.createSymbolicLink(atPath: loader.path, withDestinationPath: loaderTarget.path)

@@ -187,6 +187,11 @@ public final class LauncherManager: Sendable {
             "CFBundlePackageType": "APPL",
             "CFBundleShortVersionString": "1.0",
             "LSMinimumSystemVersion": "14.0",
+            // The stub only re-dispatches to OpenXE (`open -b`) and must never
+            // take a Dock tile of its own — the Wine GUI process (Runner's icon
+            // wrapper) owns the one visible Dock icon. Without this the stub
+            // shows a second tile that lingers while its subordinates run.
+            "LSUIElement": true,
             Self.targetPathKey: exe.path,
         ]
         if hasIcon { plist["CFBundleIconFile"] = "AppIcon" }

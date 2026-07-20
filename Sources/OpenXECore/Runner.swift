@@ -30,11 +30,25 @@ public final class Runner: Sendable {
 
     // MARK: wineserver lifecycle
 
-    /// Start a persistent wineserver for the prefix if none is running.
-    /// `wineserver -p` daemonizes and outlives individual programs, making
-    /// repeat launches near-instant.
+    /// How long the warm wineserver lingers after its last client exits, in
+    /// seconds (passed as `wineserver -p<n>`). While NWS runs it holds a client,
+    /// so this timeout only applies once every program has quit. 300s keeps
+    /// repeat launches near-instant across a quit-and-reopen or a crash-relaunch,
+    /// while self-terminating three orders of magnitude below the multi-day
+    /// window in which macOS reaps the server's `/tmp` socket — so the orphaned,
+    /// unreachable server that triggers "Can't check in server_mach_port" can
+    /// never form (diagnosed 2026-07-20).
+    static let warmServerIdleSeconds = 300
+
+    /// Start a persistent-but-idle-bounded wineserver for the prefix if none is
+    /// running. `wineserver -p<n>` daemonizes and outlives individual programs,
+    /// making repeat launches near-instant. First clears any server dir that has
+    /// decayed to lock-without-socket, which would otherwise make this launch
+    /// collide on the Mach bootstrap name.
     public func ensureWineserverWarm() {
-        _ = try? Subprocess.run(engine.activeWineserverBinary, arguments: ["-p"],
+        WineServerHousekeeping.sweepStaleServer(forPrefix: paths.prefix)
+        _ = try? Subprocess.run(engine.activeWineserverBinary,
+                                arguments: ["-p\(Self.warmServerIdleSeconds)"],
                                 environment: environment, timeout: 60,
                                 captureOutput: false)
     }

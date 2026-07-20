@@ -40,12 +40,33 @@ public final class Runner: Sendable {
     /// never form (diagnosed 2026-07-20).
     static let warmServerIdleSeconds = 300
 
+    /// Identity of the running OpenXE build, for the one-time upgrade reap. The
+    /// app's Info.plist version isn't bumped per release, so we key off the
+    /// executable itself (name + size + mtime): a new install replaces the
+    /// binary and changes this, which is exactly "first launch of a new build".
+    static var currentBuildID: String {
+        guard let exe = Bundle.main.executableURL,
+              let attrs = try? FileManager.default.attributesOfItem(atPath: exe.path)
+        else { return "unknown" }
+        let size = (attrs[.size] as? Int) ?? 0
+        let mtime = (attrs[.modificationDate] as? Date).map { Int($0.timeIntervalSince1970) } ?? 0
+        return "\(exe.lastPathComponent)-\(size)-\(mtime)"
+    }
+
+    /// Marker recording the build that last warmed a server (for the upgrade reap).
+    private var buildMarker: URL { paths.root.appendingPathComponent(".warm-server-build") }
+
     /// Start a persistent-but-idle-bounded wineserver for the prefix if none is
     /// running. `wineserver -p<n>` daemonizes and outlives individual programs,
-    /// making repeat launches near-instant. First clears any server dir that has
-    /// decayed to lock-without-socket, which would otherwise make this launch
-    /// collide on the Mach bootstrap name.
+    /// making repeat launches near-instant. Two guards run first so this launch
+    /// can never collide on the Mach bootstrap name: on the first launch of a new
+    /// build, reap any wineserver left by the previous build; then sweep an
+    /// unreachable/orphaned server for this prefix (including one holding an
+    /// already-unlinked server dir, found by its open WINEPREFIX handle).
     public func ensureWineserverWarm() {
+        WineServerHousekeeping.upgradeReapIfNeeded(forPrefix: paths.prefix,
+                                                   buildID: Self.currentBuildID,
+                                                   markerURL: buildMarker)
         WineServerHousekeeping.sweepStaleServer(forPrefix: paths.prefix)
         _ = try? Subprocess.run(engine.activeWineserverBinary,
                                 arguments: ["-p\(Self.warmServerIdleSeconds)"],

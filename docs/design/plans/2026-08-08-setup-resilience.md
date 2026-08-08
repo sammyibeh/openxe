@@ -1271,7 +1271,7 @@ Replaces 57 spawned `wine reg add` processes with one generated `.reg` import: *
 - Consumes: `SetupLog` (Task 2), `PrefixProgress` (Task 5)
 - Produces: `FontProvisioning.useBatchedImport: Bool`, `FontProvisioning.regFileContents() -> String`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```swift
 import XCTest
@@ -1337,12 +1337,12 @@ final class FontProvisioningTests: XCTestCase {
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `swift test --filter FontProvisioningTests`
 Expected: FAIL — `type 'FontProvisioning' has no member 'useBatchedImport'`
 
-- [ ] **Step 3: Add the flag and generator to `FontProvisioning.swift`**
+- [x] **Step 3: Add the flag and generator to `FontProvisioning.swift`**
 
 Append inside the enum, after the `substitutions` table:
 
@@ -1389,12 +1389,12 @@ Append inside the enum, after the `substitutions` table:
     }
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `swift test --filter FontProvisioningTests`
 Expected: PASS (6 tests)
 
-- [ ] **Step 5: Branch `provisionFonts` onto the batched path**
+- [x] **Step 5: Branch `provisionFonts` onto the batched path**
 
 In `PrefixManager.swift`, keep the per-write body from Task 5 intact as `provisionFontsPerWrite` and add the batched path in front. Both remain best-effort: a failure is logged and swallowed, never thrown.
 
@@ -1462,7 +1462,7 @@ In `PrefixManager.swift`, keep the per-write body from Task 5 intact as `provisi
 
 Rename the Task 5 implementation to `provisionFontsPerWrite(env:log:progress:)`, unchanged otherwise — its 57-step counter is now the fallback path's progress reporting.
 
-- [ ] **Step 6: Create `scripts/verify-font-batching.sh`**
+- [x] **Step 6: Create `scripts/verify-font-batching.sh`**
 
 Registry equivalence cannot be unit-tested — it needs a real prefix. Ship the proof as a repeatable script.
 
@@ -1549,7 +1549,7 @@ public static func writeVerificationFixtures(to directory: URL) throws {
 }
 ```
 
-- [ ] **Step 7: Run the equivalence proof — this is the acceptance bar**
+- [x] **Step 7: Run the equivalence proof — this is the acceptance bar**
 
 Run:
 ```bash
@@ -1570,12 +1570,12 @@ cat "$HOME/Library/Application Support/OpenXE/prefix/.openxe-ready"
 
 Expected: no strays; the marker still reads `engine=gcenx-stable-11.0_1`.
 
-- [ ] **Step 8: Verify the stage-4 speedup landed**
+- [x] **Step 8: Verify the stage-4 speedup landed**
 
 Run: `swift test --filter PrefixManagerTests && swift build`
 Expected: PASS; build succeeds
 
-- [ ] **Step 9: Commit**
+- [x] **Step 9: Commit**
 
 ```bash
 git add Sources/OpenXECore/FontProvisioning.swift Sources/OpenXECore/PrefixManager.swift \

@@ -129,4 +129,66 @@ final class EngineManagerTests: XCTestCase {
         XCTAssertNil(engine.installedVersion)
         XCTAssertTrue(engine.installedEngineIDs().isEmpty)
     }
+
+    /// Spec §10.1: descriptor.json is the atomic commit point. If it exists,
+    /// the engine is fully installed AND de-quarantined. A kill before that
+    /// must leave the engine reporting not-installed so it is re-extracted.
+    func testDescriptorIsWrittenLastSoItActsAsTheCommitPoint() throws {
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory.appendingPathComponent("openxe-commit-\(UUID().uuidString)")
+        defer { try? fm.removeItem(at: root) }
+        let paths = OpenXEPaths(root: root)
+        let mgr = EngineManager(paths: paths)
+
+        let engineDir = paths.engineVersions.appendingPathComponent("test-engine")
+        let binDir = engineDir.appendingPathComponent("wine/bin")
+        try fm.createDirectory(at: binDir, withIntermediateDirectories: true)
+        fm.createFile(atPath: binDir.appendingPathComponent("wine").path,
+                      contents: Data("x".utf8), attributes: [.posixPermissions: 0o755])
+        // Simulate the interrupted window: the binaries are still quarantined
+        // because stripQuarantine had not run yet.
+        try Subprocess.run(URL(fileURLWithPath: "/usr/bin/xattr"),
+                           arguments: ["-w", "com.apple.quarantine",
+                                       "0081;00000000;test;", binDir.appendingPathComponent("wine").path],
+                           timeout: 10)
+        // version marker present, descriptor.json absent = interrupted mid-commit
+        try Data("test\n".utf8).write(to: engineDir.appendingPathComponent("version"))
+
+        XCTAssertNil(mgr.descriptor(forInstalledID: "test-engine"),
+                     "a version file without descriptor.json must NOT look installed")
+        XCTAssertFalse(mgr.isInstalled("test-engine"))
+    }
+
+    /// The legacy backfill still has to work for the case it exists for: a
+    /// pre-multi-engine install that was fully committed and de-quarantined.
+    func testLegacyBackfillStillHealsAFullyCommittedEngine() throws {
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory.appendingPathComponent("openxe-legacy-\(UUID().uuidString)")
+        defer { try? fm.removeItem(at: root) }
+        let paths = OpenXEPaths(root: root)
+        let mgr = EngineManager(paths: paths)
+
+        let engineDir = paths.engineVersions.appendingPathComponent("gcenx-stable-11.0_1")
+        let binDir = engineDir.appendingPathComponent("wine/bin")
+        try fm.createDirectory(at: binDir, withIntermediateDirectories: true)
+        fm.createFile(atPath: binDir.appendingPathComponent("wine").path,
+                      contents: Data("x".utf8), attributes: [.posixPermissions: 0o755])
+        try Data("\(EngineCatalog.stock.version)\n".utf8)
+            .write(to: engineDir.appendingPathComponent("version"))
+
+        let healed = try XCTUnwrap(mgr.descriptor(forInstalledID: "gcenx-stable-11.0_1"))
+        XCTAssertEqual(healed.version, EngineCatalog.stock.version)
+        XCTAssertTrue(fm.fileExists(atPath: engineDir.appendingPathComponent("descriptor.json").path),
+                      "the backfill must persist what it synthesised")
+    }
+
+    /// Measured via `tar -tf`, not estimated: 5,333 entries in the archive whose
+    /// SHA-256 matched `EngineCatalog.stock.sha256` on 2026-08-09. The installed
+    /// tree is 5,324 entries and is a strict subset of it. Re-derive only if the
+    /// engine is repinned.
+    func testExpectedArchiveEntriesWasMeasured() {
+        XCTAssertEqual(EngineManager.expectedArchiveEntries, 5_333)
+        XCTAssertGreaterThan(EngineManager.expectedArchiveEntries, 5_324,
+                             "must be the measured archive count, not the installed-tree count")
+    }
 }

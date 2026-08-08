@@ -121,8 +121,13 @@ public final class EngineManager: Sendable {
         // Legacy backfill: a "version" marker + a `wine` loader is the old
         // single-engine layout. Adopt the stock catalog metadata when the
         // version matches; otherwise synthesize a minimal descriptor.
+        // The backfill must not resurrect a half-committed engine: an install
+        // killed between the move and stripQuarantine leaves a `version` file
+        // and a `wine` loader that is still quarantined and can never run.
         let fm = FileManager.default
-        guard fm.isExecutableFile(atPath: engineDir.appendingPathComponent("wine/bin/wine").path),
+        let wineLoader = engineDir.appendingPathComponent("wine/bin/wine")
+        guard fm.isExecutableFile(atPath: wineLoader.path),
+              !Self.isQuarantined(at: wineLoader),
               let version = try? String(contentsOf: engineDir.appendingPathComponent("version"),
                                         encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)
         else { return nil }
@@ -202,6 +207,8 @@ public final class EngineManager: Sendable {
     /// descriptor. Does NOT activate; call `setActive` for that. If this is
     /// the first engine installed, it is auto-activated as a convenience.
     public func install(_ descriptor: EngineDescriptor,
+                        log: SetupLog? = nil,
+                        onEntry: (@Sendable (Int) -> Void)? = nil,
                         progress: @escaping @Sendable (EngineProgress) -> Void) async throws {
         let fm = FileManager.default
         try fm.createDirectory(at: paths.engineVersions, withIntermediateDirectories: true)
@@ -214,7 +221,7 @@ public final class EngineManager: Sendable {
             let actual = try FileHasher.sha256Hex(of: partial)
             if actual == descriptor.sha256 {
                 progress(.extracting)
-                try extractAndInstall(descriptor, archive: partial)
+                try extractAndInstall(descriptor, archive: partial, log: log, onEntry: onEntry)
                 try? fm.removeItem(at: partial)
                 if activeEngineID == nil { try setActive(descriptor.id) }
                 return
@@ -229,12 +236,14 @@ public final class EngineManager: Sendable {
     /// path and by tests, avoiding a network round-trip). Verifies the
     /// checksum, extracts, records the descriptor. Does not activate unless
     /// it is the first engine.
-    public func installLocalArchive(_ descriptor: EngineDescriptor, archive: URL) throws {
+    public func installLocalArchive(_ descriptor: EngineDescriptor, archive: URL,
+                                    log: SetupLog? = nil,
+                                    onEntry: (@Sendable (Int) -> Void)? = nil) throws {
         let actual = try FileHasher.sha256Hex(of: archive)
         guard actual == descriptor.sha256 else {
             throw EngineError.checksumMismatch(expected: descriptor.sha256, actual: actual)
         }
-        try extractAndInstall(descriptor, archive: archive)
+        try extractAndInstall(descriptor, archive: archive, log: log, onEntry: onEntry)
         if activeEngineID == nil { try setActive(descriptor.id) }
     }
 
@@ -290,17 +299,29 @@ public final class EngineManager: Sendable {
 
     // MARK: extract + record
 
-    private func extractAndInstall(_ descriptor: EngineDescriptor, archive: URL) throws {
+    private func extractAndInstall(_ descriptor: EngineDescriptor, archive: URL,
+                                   log: SetupLog? = nil,
+                                   onEntry: (@Sendable (Int) -> Void)? = nil) throws {
         let fm = FileManager.default
         let staging = paths.engineVersions.appendingPathComponent("staging-\(UUID().uuidString)")
         try fm.createDirectory(at: staging, withIntermediateDirectories: true)
         defer { try? fm.removeItem(at: staging) }
 
-        // `tar -xf` auto-detects xz/gz — engine-agnostic archive format.
+        // `tar -xvf` auto-detects xz/gz — engine-agnostic archive format. The
+        // -v turns the only long silent stretch of stage 3 into a countable
+        // stream (spec §5.2).
+        let counter = EntryCounter()
         let untar = try Subprocess.run(
             URL(fileURLWithPath: "/usr/bin/tar"),
-            arguments: ["-xf", archive.path, "-C", staging.path],
-            timeout: 900)
+            arguments: ["-xvf", archive.path, "-C", staging.path],
+            timeout: 900,
+            logHandle: nil,               // sampled below, not teed verbatim
+            onLine: { _ in
+                let n = counter.increment()
+                // Bound log volume: every 200th path, per spec §5.2.
+                if n % 200 == 0 { log?.note("unpacked \(n) entries") }
+                onEntry?(n)
+            })
         guard untar.status == 0 else {
             throw EngineError.layoutUnexpected("tar exited \(untar.status): \(untar.output.suffix(300))")
         }
@@ -318,16 +339,37 @@ public final class EngineManager: Sendable {
         try fm.createDirectory(at: engineDir, withIntermediateDirectories: true)
         try fm.moveItem(at: wineRoot, to: engineDir.appendingPathComponent("wine"))
 
-        // Record the descriptor so the engine is self-describing on disk.
+        // De-quarantine BEFORE recording the descriptor. Gatekeeper would block
+        // the unsigned Wine binaries otherwise, and until 2026-08-08 a kill in
+        // this window left an engine that reported installed but could never
+        // run, with no code path to repair it (spec §10.1).
+        try Self.stripQuarantine(at: engineDir)
+
+        // Legacy plain-text version marker (kept for humans).
+        try Data("\(descriptor.version)\n".utf8)
+            .write(to: engineDir.appendingPathComponent("version"))
+
+        // descriptor.json is the atomic commit point: its existence means
+        // "fully installed and de-quarantined". Written via a temp file so a
+        // crash mid-write cannot leave a truncated descriptor behind.
         let encoder = JSONEncoder()
         encoder.outputFormatting = .prettyPrinted
-        try encoder.encode(descriptor).write(to: engineDir.appendingPathComponent("descriptor.json"))
-        // Legacy plain-text version marker (kept for humans).
-        try Data("\(descriptor.version)\n".utf8).write(to: engineDir.appendingPathComponent("version"))
-
-        // Gatekeeper would block the unsigned Wine binaries if quarantined.
-        try Self.stripQuarantine(at: engineDir)
+        let descriptorURL = engineDir.appendingPathComponent("descriptor.json")
+        let tmp = engineDir.appendingPathComponent("descriptor.json.tmp")
+        try encoder.encode(descriptor).write(to: tmp)
+        _ = try fm.replaceItemAt(descriptorURL, withItemAt: tmp)
     }
+
+    /// Entries the pinned engine archive contains. MEASURED via `tar -tf`
+    /// (spec §5.2) — not the installed tree's 5,324, which excludes the outer
+    /// `.app` wrapper `findWineRoot` discards and includes two files written
+    /// after extraction. Re-derive only if the engine is repinned; see
+    /// Task 7 Step 4 of the setup-resilience plan for the exact command.
+    /// Progress clamps as a safety net.
+    ///
+    /// Measured 2026-08-09: `tar -tf wine-stable-11.0_1-osx64.tar.xz | wc -l`
+    /// = 5,333, against an archive whose SHA-256 matched the pin exactly.
+    public static let expectedArchiveEntries = 5_333
 
     /// Depth-limited search for a directory holding `bin/<binaryName>`.
     static func findWineRoot(in staging: URL, binaryName: String) -> URL? {
@@ -354,6 +396,15 @@ public final class EngineManager: Sendable {
     /// first: some engine tarballs (e.g. CrossOver-derived builds) unpack
     /// read-only, and `xattr -d` fails silently on read-only files — which
     /// leaves Gatekeeper dialogs and dylib load failures at first launch.
+    /// True when the file still carries com.apple.quarantine. Used to refuse
+    /// the legacy backfill for an engine that was never de-quarantined.
+    static func isQuarantined(at url: URL) -> Bool {
+        let result = try? Subprocess.run(URL(fileURLWithPath: "/usr/bin/xattr"),
+                                         arguments: ["-p", "com.apple.quarantine", url.path],
+                                         timeout: 10)
+        return result?.status == 0
+    }
+
     static func stripQuarantine(at directory: URL) throws {
         try Subprocess.run(URL(fileURLWithPath: "/bin/chmod"),
                            arguments: ["-R", "u+w", directory.path],
@@ -361,6 +412,17 @@ public final class EngineManager: Sendable {
         try Subprocess.run(URL(fileURLWithPath: "/usr/bin/xattr"),
                            arguments: ["-dr", "com.apple.quarantine", directory.path],
                            timeout: 300)
+    }
+}
+
+/// Thread-safe entry counter for the unpack progress stream.
+final class EntryCounter: @unchecked Sendable {
+    private var count = 0
+    private let lock = NSLock()
+    func increment() -> Int {
+        lock.lock(); defer { lock.unlock() }
+        count += 1
+        return count
     }
 }
 

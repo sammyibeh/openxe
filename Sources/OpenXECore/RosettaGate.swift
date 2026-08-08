@@ -28,6 +28,21 @@ public struct RosettaGate: Sendable {
         case failed(SetupFailure)
     }
 
+    /// What the install is doing right now, so the UI can say so. Typed rather
+    /// than a bare string: the caller needs to distinguish "we are working" from
+    /// "we are waiting on a human", and must not do it by comparing copy.
+    public enum InstallPhase: Sendable, Equatable {
+        case installing
+        case awaitingAuthorization
+
+        public var statusMessage: String {
+            switch self {
+            case .installing: return SetupCopy.rosettaInstalling
+            case .awaitingAuthorization: return SetupCopy.rosettaAwaitingAuthorization
+            }
+        }
+    }
+
     /// Why an install attempt did not leave the machine able to run x86_64.
     /// Each maps to its own plain-language copy and its own way forward — a
     /// single "it failed" message is a dead end for a non-technical user.
@@ -116,9 +131,9 @@ public struct RosettaGate: Sendable {
     /// Neither attempt's exit status is trusted; only the machine's own answer
     /// counts, so a partial or falsely-successful install is caught here rather
     /// than at the first Wine subprocess.
-    public func attemptInstall(onStatus: @Sendable (String) -> Void = { _ in })
+    public func attemptInstall(onStatus: @Sendable (InstallPhase) -> Void = { _ in })
         -> InstallOutcome {
-        onStatus(SetupCopy.rosettaInstalling)
+        onStatus(.installing)
         let direct = installer()
         guard !probe() else { return .installed }
 
@@ -130,7 +145,7 @@ public struct RosettaGate: Sendable {
             return .failed(Self.failure(for: firstReason, technicalDetail: transcript))
         }
 
-        onStatus(SetupCopy.rosettaAwaitingAuthorization)
+        onStatus(.awaitingAuthorization)
         let authorized = authorizedInstaller()
         guard !probe() else { return .installed }
         transcript += "\nauthorized install exited \(authorized.status): "

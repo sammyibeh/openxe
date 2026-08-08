@@ -55,20 +55,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard !working, !pendingExes.isEmpty else { return }
         working = true
 
-        // 2. Rosetta gate (Apple Silicon only).
-        guard ensureRosetta() else {
-            working = false
-            pendingExes.removeAll()
-            terminateIfIdle()
-            return
-        }
+        // `working` is set synchronously above, so the Task below cannot be
+        // re-entered by a second open-file event while the gate is running.
+        Task {
+            // 2. Rosetta gate (Apple Silicon only; a no-op on Intel, where the
+            // engine runs natively).
+            guard await self.ensureRosetta() else {
+                self.working = false
+                self.pendingExes.removeAll()
+                self.terminateIfIdle()
+                return
+            }
 
-        let needsEngine = !engine.isActiveInstalled
-        let needsPrefix = needsEngine || !prefixManager.isReady
-        if needsEngine || needsPrefix {
-            runSetupThenLaunch(needsEngine: needsEngine)
-        } else {
-            launchPending()
+            let needsEngine = !self.engine.isActiveInstalled
+            let needsPrefix = needsEngine || !self.prefixManager.isReady
+            if needsEngine || needsPrefix {
+                self.runSetupThenLaunch(needsEngine: needsEngine)
+            } else {
+                self.launchPending()
+            }
         }
     }
 
@@ -174,22 +179,65 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: Rosetta (spec §6)
 
-    private func ensureRosetta() -> Bool {
-        guard !RosettaCheck.canRunX86_64 else { return true }
+    /// The double-click-an-.exe path — the one a non-technical user actually
+    /// hits. It used to carry its own hardcoded copy ("Rosetta 2 translation
+    /// layer", "x86 program") that had already drifted from the wizard's, and
+    /// it trusted the installer's exit status. Both now come from the same
+    /// place as everything else: SetupCopy and RosettaGate.
+    private func ensureRosetta(gate: RosettaGate = .live()) async -> Bool {
+        let outcome = await Task.detached(priority: .userInitiated) { gate.check() }.value
+        guard case .missing(let failure) = outcome else { return true }
+
         NSApp.activate(ignoringOtherApps: true)
         let alert = NSAlert()
-        alert.messageText = "Rosetta 2 is required"
-        alert.informativeText = "OpenXE's Windows engine is an x86 program and needs Apple's "
-            + "Rosetta 2 translation layer on this Mac. Install it now?"
-        alert.addButton(withTitle: "Install Rosetta")
-        alert.addButton(withTitle: "Cancel")
-        guard alert.runModal() == .alertFirstButtonReturn else { return false }
+        alert.messageText = SetupCopy.rosettaTitle
+        alert.informativeText = [failure.userMessage,
+                                 failure.suggestedAction,
+                                 SetupCopy.rosettaDeprecationNote].joined(separator: "\n\n")
+        if gate.offersInstall {
+            alert.addButton(withTitle: SetupCopy.rosettaInstallButton)
+            alert.addButton(withTitle: SetupCopy.rosettaNotNowButton)
+        } else {
+            alert.addButton(withTitle: SetupCopy.rosettaDismissButton)
+        }
+        let response = alert.runModal()
+        guard gate.offersInstall, response == .alertFirstButtonReturn else { return false }
 
-        let result = RosettaCheck.install()
-        if result.status == 0, RosettaCheck.canRunX86_64 { return true }
-        showError(title: "Rosetta installation did not complete",
-                  message: String(result.output.suffix(500)), offerLog: false)
-        return false
+        return await runRosettaInstall(gate: gate)
+    }
+
+    /// Shows visible progress for the duration — this is minutes, not instant —
+    /// and reports every outcome in the same plain language the wizard uses.
+    private func runRosettaInstall(gate: RosettaGate) async -> Bool {
+        let progress = ProgressWindowController()
+        progressWindow = progress
+        progress.show(message: SetupCopy.rosettaInstalling)
+        let ticker = InstallTicker { [weak progress] message in
+            progress?.setIndeterminate(message: message)
+        }
+
+        let install = await Task.detached(priority: .userInitiated) {
+            gate.attemptInstall(onStatus: { phase in
+                Task { @MainActor in
+                    ticker.pinnedMessage = phase == .awaitingAuthorization
+                        ? phase.statusMessage : nil
+                }
+            })
+        }.value
+
+        ticker.stop()
+        progressWindow?.close()
+        progressWindow = nil
+
+        switch install {
+        case .installed:
+            return true
+        case .failed(let failure):
+            showError(title: SetupCopy.rosettaTitle,
+                      message: failure.userMessage + "\n\n" + failure.suggestedAction,
+                      offerLog: false)
+            return false
+        }
     }
 
     // MARK: settings + alerts

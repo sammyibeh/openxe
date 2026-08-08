@@ -19,6 +19,13 @@ final class RosettaGateTests: XCTestCase {
         }
     }
 
+    /// Reaching this means a test is talking to something it did not inject —
+    /// which, for an installer, means the real system installer.
+    private static let forbidden: @Sendable () -> (status: Int32, output: String) = {
+        XCTFail("a test invoked an installer it did not inject")
+        return (-1, "forbidden")
+    }
+
     private static let jargon = ["EBADARCH", "posix_spawn", "Errno", "wineboot",
                                  "wineserver", "Wine", "prefix", "exec format"]
 
@@ -33,14 +40,14 @@ final class RosettaGateTests: XCTestCase {
     }
 
     func testSatisfiedWhenX86BinariesCanRun() {
-        let gate = RosettaGate(probe: { true }, installer: { (0, "") }, offersInstall: true)
+        let gate = RosettaGate(probe: { true }, installer: { (0, "") }, authorizedInstaller: Self.forbidden, offersInstall: true)
         guard case .satisfied = gate.check() else {
             return XCTFail("expected .satisfied")
         }
     }
 
     func testMissingProducesRosettaMissingFailureInPlainLanguage() {
-        let gate = RosettaGate(probe: { false }, installer: { (0, "") }, offersInstall: true)
+        let gate = RosettaGate(probe: { false }, installer: { (0, "") }, authorizedInstaller: Self.forbidden, offersInstall: true)
         guard case .missing(let failure) = gate.check() else {
             return XCTFail("expected .missing")
         }
@@ -56,8 +63,8 @@ final class RosettaGateTests: XCTestCase {
     /// only the suggested action changes. Detection and explanation stay correct
     /// even if `softwareupdate --install-rosetta` stops working.
     func testExplanationSurvivesTheInstallOfferBeingDisabled() {
-        let offered = RosettaGate(probe: { false }, installer: { (0, "") }, offersInstall: true)
-        let withheld = RosettaGate(probe: { false }, installer: { (0, "") }, offersInstall: false)
+        let offered = RosettaGate(probe: { false }, installer: { (0, "") }, authorizedInstaller: Self.forbidden, offersInstall: true)
+        let withheld = RosettaGate(probe: { false }, installer: { (0, "") }, authorizedInstaller: Self.forbidden, offersInstall: false)
         guard case .missing(let a) = offered.check(),
               case .missing(let b) = withheld.check() else {
             return XCTFail("expected .missing from both")
@@ -82,7 +89,7 @@ final class RosettaGateTests: XCTestCase {
     func testInstallSucceedsOnlyWhenTheMachineAgrees() {
         let probe = Probe([false, true])
         let gate = RosettaGate(probe: { probe.next() }, installer: { (0, "installed") },
-                               offersInstall: true)
+                               authorizedInstaller: Self.forbidden, offersInstall: true)
         guard case .missing = gate.check() else { return XCTFail("expected .missing") }
         guard case .installed = gate.attemptInstall() else {
             return XCTFail("expected .installed")
@@ -94,7 +101,10 @@ final class RosettaGateTests: XCTestCase {
     /// actually available.
     func testZeroExitStatusIsNotTrustedWithoutRetesting() {
         let probe = Probe([false])
+        // An unclassifiable failure escalates to an authorized retry, so this
+        // one is injected too — it must never be the real installer.
         let gate = RosettaGate(probe: { probe.next() }, installer: { (0, "No updates available") },
+                               authorizedInstaller: { (0, "No updates available") },
                                offersInstall: true)
         guard case .missing = gate.check() else { return XCTFail("expected .missing") }
         guard case .failed(let failure) = gate.attemptInstall() else {
@@ -112,6 +122,7 @@ final class RosettaGateTests: XCTestCase {
     func testInstallerFailureIsReportedWithItsOutput() {
         let gate = RosettaGate(probe: { false },
                                installer: { (1, "softwareupdate: command not found") },
+                               authorizedInstaller: { (1, "osascript: command not found") },
                                offersInstall: true)
         guard case .failed(let failure) = gate.attemptInstall() else {
             return XCTFail("expected .failed")

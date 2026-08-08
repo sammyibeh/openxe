@@ -347,11 +347,64 @@ public enum RosettaCheck {
     }
 
     /// Runs Apple's Rosetta installer; returns its combined output and status.
+    ///
+    /// `softwareupdate` authorizes through the Security framework and can refuse
+    /// outright — its own strings include "Require authorization from admin but
+    /// user is not admin" and "Error: failed to authorize for installation."
+    /// Whether it raises an interactive panel when spawned from a GUI app is not
+    /// something we can rely on, so this is the *cheap* attempt and
+    /// `installWithAdministratorAuthorization()` is the fallback that is
+    /// guaranteed to ask.
     public static func install() -> (status: Int32, output: String) {
+        guard !isRunningUnderTest else { return refusedUnderTest }
         let result = try? Subprocess.run(
             URL(fileURLWithPath: "/usr/sbin/softwareupdate"),
             arguments: ["--install-rosetta", "--agree-to-license"],
             timeout: 600)
         return (result?.status ?? -1, result?.output ?? "softwareupdate could not be run")
+    }
+
+    /// Same install, but explicitly authorized, so macOS puts up its familiar
+    /// password panel. Used only after the direct attempt fails for a reason a
+    /// password could plausibly fix — a user who cannot open Terminal has no
+    /// other way past an authorization refusal.
+    ///
+    /// The prompt text is ours; the command never appears in it. Cancelling
+    /// yields "User canceled. (-128)" and installs nothing.
+    public static func installWithAdministratorAuthorization()
+        -> (status: Int32, output: String) {
+        guard !isRunningUnderTest else { return refusedUnderTest }
+        let command = "/usr/sbin/softwareupdate --install-rosetta --agree-to-license"
+        let script = "do shell script \"\(escapeForAppleScript(command))\""
+            + " with prompt \"\(escapeForAppleScript(SetupCopy.rosettaAuthorizationPrompt))\""
+            + " with administrator privileges"
+        // Generous timeout: the panel waits on a human.
+        let result = try? Subprocess.run(URL(fileURLWithPath: "/usr/bin/osascript"),
+                                         arguments: ["-e", script],
+                                         timeout: 900)
+        return (result?.status ?? -1,
+                result?.output ?? "the authorized installer could not be run")
+    }
+
+    /// A hard stop, not a convenience. These two functions modify the machine —
+    /// one of them raises a password panel — and a test run must never do
+    /// either. On a developer's Mac without Rosetta, an accidental call would
+    /// silently install system software mid-suite; with Rosetta present it
+    /// still reinstalls Apple's package as root. Injection is the primary
+    /// defence (see `RosettaGate.live`); this is the backstop for when someone
+    /// adds a new dependency with a live default and forgets.
+    static var isRunningUnderTest: Bool {
+        ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
+            || ProcessInfo.processInfo.environment["XCTestBundlePath"] != nil
+            || ProcessInfo.processInfo.environment["OPENXE_DISABLE_SYSTEM_INSTALLERS"] != nil
+            || NSClassFromString("XCTestCase") != nil
+    }
+
+    static let refusedUnderTest: (status: Int32, output: String) =
+        (-1, "refused: system installers are disabled under test")
+
+    private static func escapeForAppleScript(_ text: String) -> String {
+        text.replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
     }
 }

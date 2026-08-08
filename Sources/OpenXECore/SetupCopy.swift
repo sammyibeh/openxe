@@ -47,16 +47,66 @@ public enum SetupCopy {
     public static let rosettaNotNowButton = "Not Now"
     public static let rosettaDismissButton = "OK"
 
+    /// Apple began showing its own "Rosetta is being discontinued" notice in
+    /// macOS 26.4, on every translated launch. Unexplained, a user reads that as
+    /// OpenXE being broken and stops. Named here, before macOS says it.
+    public static let rosettaDeprecationNote =
+        "macOS may show its own notice saying Rosetta is being discontinued in a future "
+        + "version of macOS. That is Apple's message, not a problem with OpenXE, and New "
+        + "World Scheduler will keep working for now."
+
     public static let rosettaChecking = "Checking what this Mac needs…"
     public static let rosettaInstalling =
         "Asking macOS to install Rosetta… this can take a few minutes."
+
+    /// Elapsed time turns a frozen-looking window into visible progress.
+    public static func rosettaInstalling(elapsed: TimeInterval) -> String {
+        guard elapsed >= 1 else { return rosettaInstalling }
+        let total = Int(elapsed)
+        let clock = String(format: "%d:%02d", total / 60, total % 60)
+        return "Asking macOS to install Rosetta… this can take a few minutes. (\(clock))"
+    }
+
+    // MARK: administrator authorization
+    //
+    // Installing Rosetta authorizes through macOS's security system and can be
+    // refused outright for a standard (non-administrator) user. When that
+    // happens OpenXE asks macOS for authorization explicitly, which puts up the
+    // familiar password panel. This is the prompt text shown inside it.
+
+    public static let rosettaAuthorizationPrompt =
+        "OpenXE needs your permission for macOS to install Apple's Rosetta component."
+
+    public static let rosettaAwaitingAuthorization =
+        "Waiting for your permission… macOS will ask for your password."
+
+    public static let rosettaAuthorizationDeclined =
+        "OpenXE did not get permission to install Rosetta, so it stopped and changed nothing."
+
+    public static let rosettaAuthorizationDeclinedAdvice =
+        "Nothing was installed and nothing was harmed. Press the button again and enter the "
+        + "password you use to unlock this Mac when macOS asks."
+
+    public static let rosettaNetworkFailure =
+        "macOS could not download Rosetta from Apple."
+
+    public static let rosettaNetworkFailureAdvice =
+        "Check that this Mac is connected to the internet, then try again. If you are on "
+        + "Wi-Fi, reconnecting often fixes it."
+
+    public static let rosettaUnavailable =
+        "This Mac cannot install Rosetta — Apple is not offering it here."
+
+    public static let rosettaUnavailableAdvice =
+        "Without Rosetta, OpenXE cannot run New World Scheduler on this Mac. Nothing was "
+        + "installed and nothing was changed."
 
     public static let rosettaInstallDidNotComplete =
         "macOS did not finish installing Rosetta, so OpenXE cannot continue."
 
     public static let rosettaInstallRetryAdvice =
-        "You can try again. If this Mac no longer offers Rosetta, OpenXE will not be able to "
-        + "run New World Scheduler on it."
+        "Nothing was left half-installed. You can try again. If this Mac no longer offers "
+        + "Rosetta, OpenXE will not be able to run New World Scheduler on it."
 
     public static let rosettaBlockedStatus =
         "OpenXE can't set up the Windows environment until Rosetta is installed."

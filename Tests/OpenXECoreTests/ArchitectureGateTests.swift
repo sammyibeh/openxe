@@ -36,6 +36,7 @@ final class ArchitectureGateTests: XCTestCase {
         let gate = RosettaGate(
             probe: { RosettaCheck.canRunX86_64(isAppleSilicon: false, probe: { false }) },
             installer: { installerRan.set(); return (0, "") },
+            authorizedInstaller: { installerRan.set(); return (0, "") },
             offersInstall: true)
         guard case .satisfied = gate.check() else {
             return XCTFail("the Rosetta gate must be a no-op on Intel")

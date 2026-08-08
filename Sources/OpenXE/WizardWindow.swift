@@ -278,7 +278,7 @@ final class WizardWindowController: NSObject, NSWindowDelegate {
     /// Returns true when the Windows environment can actually run here. On
     /// failure the wizard is left idle with an explanation in the status line —
     /// the user can read it, fix Rosetta, and press the button again.
-    private func rosettaGatePassed(gate: RosettaGate = RosettaGate()) async -> Bool {
+    private func rosettaGatePassed(gate: RosettaGate = .live()) async -> Bool {
         setBusy(true)
         setStatus(SetupCopy.rosettaChecking)
         let outcome = await Task.detached(priority: .userInitiated) { gate.check() }.value

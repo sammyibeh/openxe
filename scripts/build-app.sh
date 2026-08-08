@@ -4,7 +4,23 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-swift build -c release
+# Universal (arm64 + x86_64). A host-arch-only build would refuse to launch on
+# the other kind of Mac, and Intel Macs run the x86_64 Wine engine NATIVELY —
+# no Rosetta involved — so they are a first-class target, not a fallback.
+# `--arch` routes the build through the Xcode build system, which writes to
+# .build/apple/Products/Release rather than .build/release.
+swift build -c release --arch arm64 --arch x86_64
+UNIVERSAL_BIN=".build/apple/Products/Release/OpenXE"
+ARCHS=$(lipo -archs "$UNIVERSAL_BIN")
+echo "OpenXE architectures: ${ARCHS}"
+case "$ARCHS" in
+  *arm64*) ;;
+  *) echo "error: built binary has no arm64 slice (got: ${ARCHS})" >&2; exit 1 ;;
+esac
+case "$ARCHS" in
+  *x86_64*) ;;
+  *) echo "error: built binary has no x86_64 slice (got: ${ARCHS})" >&2; exit 1 ;;
+esac
 
 # Icons are generated, never checked in (spec §9.1).
 if [ ! -f Resources/OpenXE.icns ] || [ ! -f Resources/LauncherFallback.icns ]; then
@@ -14,7 +30,7 @@ fi
 APP="dist/OpenXE.app"
 rm -rf dist
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-cp .build/release/OpenXE "$APP/Contents/MacOS/OpenXE"
+cp "$UNIVERSAL_BIN" "$APP/Contents/MacOS/OpenXE"
 cp Resources/Info.plist "$APP/Contents/Info.plist"
 cp Resources/OpenXE.icns "$APP/Contents/Resources/OpenXE.icns"
 cp Resources/LauncherFallback.icns "$APP/Contents/Resources/LauncherFallback.icns"
@@ -25,7 +41,14 @@ cp Resources/FontAwesome.ttf "$APP/Contents/Resources/FontAwesome.ttf"
 printf 'APPL????' > "$APP/Contents/PkgInfo"
 
 # Ad-hoc signature only — personal use, no notarization (spec hard constraint).
+# One codesign pass covers a universal binary: the signature is embedded per
+# slice. Verify each slice explicitly so a half-signed bundle cannot ship.
 codesign --force -s - "$APP"
+codesign --verify --strict "$APP"
+for a in arm64 x86_64; do
+  codesign -dv --arch "$a" "$APP" >/dev/null 2>&1 \
+    || { echo "error: ${a} slice is not signed" >&2; exit 1; }
+done
 
 SIZE_KB=$(du -sk "$APP" | cut -f1)
 echo "OpenXE.app size: ${SIZE_KB} KB"

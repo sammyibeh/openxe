@@ -311,6 +311,10 @@ public final class Runner: Sendable {
 }
 
 /// Rosetta 2 gate for the x86_64 engine on Apple Silicon. Spec §5 step 2, §6.
+///
+/// OpenXE ships universal and runs on both kinds of Mac. Only Apple silicon
+/// needs Rosetta; an Intel Mac runs the x86_64 engine natively and must never
+/// be told anything about Rosetta at all.
 public enum RosettaCheck {
     /// True on Apple Silicon (where the x86_64 engine needs Rosetta).
     public static var isNeeded: Bool {
@@ -322,7 +326,20 @@ public enum RosettaCheck {
 
     /// True when x86_64 binaries can run (native Intel, or Rosetta installed).
     public static var canRunX86_64: Bool {
-        guard isNeeded else { return true }
+        canRunX86_64(isAppleSilicon: isNeeded, probe: probeTranslation)
+    }
+
+    /// Architecture is a parameter so the Intel path is testable on an Apple
+    /// silicon machine (and vice versa) — it is otherwise unreachable, and
+    /// unreachable behaviour regresses silently.
+    static func canRunX86_64(isAppleSilicon: Bool, probe: () -> Bool) -> Bool {
+        // Intel: native. Answer without spawning anything.
+        guard isAppleSilicon else { return true }
+        return probe()
+    }
+
+    /// The direct experiment: run an x86_64 binary and see.
+    static func probeTranslation() -> Bool {
         let result = try? Subprocess.run(URL(fileURLWithPath: "/usr/bin/arch"),
                                          arguments: ["-x86_64", "/usr/bin/true"],
                                          timeout: 10)

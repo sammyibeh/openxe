@@ -1604,7 +1604,7 @@ Eliminates the one unrecoverable state in the current code (§10.1) and gives st
 - Consumes: `SetupLog` (Task 2)
 - Produces: `EngineManager.expectedArchiveEntries: Int`; `extractAndInstall` gains `log:` and `onEntry:`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```swift
     /// Spec §10.1: descriptor.json is the atomic commit point. If it exists,
@@ -1640,12 +1640,12 @@ Eliminates the one unrecoverable state in the current code (§10.1) and gives st
 
 > **Note:** the first assertion changes existing behaviour. `descriptor(forInstalledID:)` currently backfills a descriptor from a bare `version` file (`EngineManager.swift:123-141`), which is exactly what makes the half-committed engine look installed. The backfill must now additionally require that quarantine has been stripped — see Step 3.
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `swift test --filter EngineManagerTests/testDescriptorIsWrittenLastSoItActsAsTheCommitPoint`
 Expected: FAIL — the legacy backfill synthesises a descriptor, so `descriptor(...)` is non-nil
 
-- [ ] **Step 3: Reorder the commit sequence**
+- [x] **Step 3: Reorder the commit sequence**
 
 Replace the tail of `extractAndInstall` (currently `EngineManager.swift:316-330`) so de-quarantine precedes the metadata writes and `descriptor.json` lands last, atomically:
 
@@ -1700,7 +1700,7 @@ And add the helper beside `stripQuarantine`:
     }
 ```
 
-- [ ] **Step 4: Measure `expectedArchiveEntries` — do not estimate it**
+- [x] **Step 4: Measure `expectedArchiveEntries` — do not estimate it**
 
 The pinned archive is listed without extracting. This is a one-time developer action; re-run it only if the engine is repinned.
 
@@ -1716,7 +1716,7 @@ Expected: the checksum matches `EngineCatalog.stock.sha256`, and the count is a 
 
 If the checksum does **not** match, stop — the pinned asset has been replaced upstream and that is a separate problem (spec §4.1 notes the pin exists to catch exactly this).
 
-- [ ] **Step 5: Add unpack counting**
+- [x] **Step 5: Add unpack counting**
 
 Add the constant near `findWineRoot`:
 
@@ -1763,12 +1763,12 @@ final class EntryCounter: @unchecked Sendable {
 
 Widen `extractAndInstall` and `install` to carry `log: SetupLog?` and `onEntry: (@Sendable (Int) -> Void)?`, both defaulted to `nil` so existing callers and tests compile unchanged.
 
-- [ ] **Step 6: Run tests**
+- [x] **Step 6: Run tests**
 
 Run: `swift test --filter EngineManagerTests && swift build`
 Expected: PASS, build succeeds. `testExpectedArchiveEntriesIsPlausible` now asserts the measured value, not a guess.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add Sources/OpenXECore/EngineManager.swift Tests/OpenXECoreTests/EngineManagerTests.swift

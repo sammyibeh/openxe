@@ -48,8 +48,22 @@ make            # help
 make build      # swift build -c release  (compile only)
 make test       # swift test  (unit + gated integration tests)
 make app        # build + ad-hoc sign + install OpenXE.app to /Applications
+make package-app # build + wrap into a drag-to-install dist/OpenXE.dmg
 make clean      # remove the SwiftPM .build directory and dist/
 ```
+
+`make package-app` runs [`scripts/package-app.sh`](scripts/package-app.sh), which
+calls `build-app.sh --no-install` (so packaging never replaces your installed copy,
+and there is only one definition of how the bundle is assembled), lays the app out
+beside an `/Applications` symlink, builds a compressed `.dmg` with `hdiutil`, ad-hoc
+signs the image, and then **mounts what it just produced** to verify the app inside is
+universal, its signature is intact, the symlink resolves, and the image detaches
+cleanly. The 5 MB budget is enforced on the **app bundle**; the image size is reported
+but not gated.
+
+The `.dmg` is not a Gatekeeper workaround — it does not help there at all. It exists
+to make dragging the app into `Applications` the obvious gesture, which avoids App
+Translocation. See [`docs/platform-support.md`](docs/platform-support.md) §4.2.
 
 `make app` runs [`scripts/build-app.sh`](scripts/build-app.sh), which:
 
@@ -127,7 +141,8 @@ Sources/
     main.swift, AppDelegate.swift, ProgressWindow.swift, SettingsWindow.swift,
     AppConfigWindow.swift, WindowActivation.swift
 Tests/OpenXECoreTests/   # unit tests + one gated end-to-end test
-scripts/                 # build-app.sh, build-engine.sh, package-engine.sh, make-icon.swift
+scripts/                 # build-app.sh, package-app.sh, build-engine.sh,
+                         # package-engine.sh, reset-fresh.sh, make-icon.swift
 docs/                    # design spec, smoke checklist, roadmap, distribution notes
 ```
 

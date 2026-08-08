@@ -48,13 +48,21 @@ The same **About This Mac** screen tells you which kind of Mac you have:
 
 ## Step 1 — Download OpenXE and put it in Applications
 
-1. From the project's **Releases** page, download **`OpenXE.zip`**. It lands in your
+1. From the project's **Releases** page, download **`OpenXE.dmg`**. It lands in your
    **Downloads** folder.
-2. **Double-click the zip file.** It unpacks into **`OpenXE`**, with the rocket-style
-   app icon, in the same Downloads folder.
-3. **Drag `OpenXE` into your `Applications` folder.** Do this before opening it — the
-   next step is much easier from Applications, and leaving it in Downloads causes
-   confusion later.
+2. **Double-click `OpenXE.dmg`.** A window opens showing the **OpenXE** app on one
+   side and a shortcut to your **Applications** folder on the other.
+3. **Drag OpenXE onto the Applications shortcut.** That copies it into place.
+4. **Close the window and eject the disk image** — click the eject symbol next to
+   **OpenXE** in the Finder sidebar, or drag it to the Trash. You can delete the
+   downloaded `.dmg` afterwards; you do not need it again.
+5. From now on, **open OpenXE from your Applications folder**, not from Downloads.
+
+> **Do not skip the drag.** Opening the app directly from inside the disk image, or
+> from your Downloads folder, makes macOS run it from a temporary read-only location.
+> It behaves oddly there and the approval in the next step will not stick. Copying it
+> to Applications first avoids that entirely — which is the whole reason the download
+> is shaped this way.
 
 ## Step 2 — Let macOS open it the first time
 
@@ -222,9 +230,9 @@ Click **Done**, never **Move to Trash**.
 
 **"OpenXE is damaged and can't be opened."**
 Different message, different cause: this one points at a damaged copy of the app
-rather than the ordinary block. Delete it, download `OpenXE.zip` again, unpack it by
-double-clicking (not with a third-party unzip tool), and try again. If it persists,
-see the fallback below.
+rather than the ordinary block. Delete the copy in Applications, download
+`OpenXE.dmg` again, and repeat [Step 1](#step-1--download-openxe-and-put-it-in-applications).
+If it persists, see the fallback below.
 
 **Fallback for a stubborn security block.**
 Only if the steps above genuinely did not work. In the **Terminal** app, paste this

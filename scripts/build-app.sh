@@ -1,8 +1,23 @@
 #!/bin/zsh
 # Builds, assembles, ad-hoc signs, installs, and registers OpenXE.app.
 # Spec §3, §9.1, §9.2.
+#
+#   build-app.sh                 build + sign + install to /Applications
+#   build-app.sh --no-install    build + sign only, leaving dist/OpenXE.app
+#
+# --no-install exists so packaging (scripts/package-app.sh) can reuse this exact
+# assembly without the side effect of replacing the developer's installed copy.
+# There is deliberately no second copy of the assembly logic to drift from.
 set -euo pipefail
 cd "$(dirname "$0")/.."
+
+INSTALL=1
+for arg in "$@"; do
+  case "$arg" in
+    --no-install) INSTALL=0 ;;
+    *) echo "usage: build-app.sh [--no-install]" >&2; exit 2 ;;
+  esac
+done
 
 # A source file that exists locally but was never committed builds fine here and
 # breaks on every other clone. SPM compiles whatever is in Sources/, so nothing
@@ -66,6 +81,11 @@ echo "OpenXE.app size: ${SIZE_KB} KB"
 if [ "$SIZE_KB" -ge 5120 ]; then
   echo "error: OpenXE.app exceeds the 5 MB budget" >&2
   exit 1
+fi
+
+if [ "$INSTALL" -eq 0 ]; then
+  echo "Built and signed (not installed): $APP"
+  exit 0
 fi
 
 # Install as a first-class app (spec §9.2): /Applications when writable,

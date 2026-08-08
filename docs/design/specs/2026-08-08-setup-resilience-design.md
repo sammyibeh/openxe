@@ -49,6 +49,25 @@ Every weight, threshold, and string in this spec derives from measurements taken
 | App binary today | 879,312 B (859 KB) | `dist/OpenXE.app/Contents/MacOS/OpenXE` |
 | Font registry writes | **57** | `FontProvisioning.substitutions` = 28 pairs × 2 tables + 1 FontAwesome registration |
 
+### 3.1 Spike measurements (R3, 2026-08-08)
+
+Taken against the real pinned engine on a throwaway prefix (Apple M2, macOS 27, engine already Rosetta-translated and page-cached — see the caveat below). Two full `wineboot --init` runs, instrumented for output-line timing and 1 Hz filesystem growth.
+
+| Quantity | Measured | Note |
+|---|---|---|
+| `wineboot --init` wall time | **24.1 s** (run A), 19.7 s (run B) | Both `rc=0`; Wine Mono registered and Gecko present, so the boot did the real work |
+| `wine reg add`, warm server | **559 ms** each | 10 sequential writes timed |
+| 57 font-provisioning writes, projected | **~32 s** | 57 × 559 ms |
+| **Stage 4 total (measured)** | **~59 s** | 24 boot + 1 drain + 0.5 verify + 1.7 (3 reg) + 32 fonts + 0.5 linking |
+| Max output-line gap, `WINEDEBUG=fixme-all` | **9.71 s** | Today's setting. Marginal against the 10 s criterion |
+| Max output-line gap, `WINEDEBUG=+loaddll` | **4.63 s** | 735 loaddll lines, 101 KB |
+| Max gap, **output ∪ filesystem growth**, `fixme-all` | **4.47 s** | ← the adopted mechanism |
+| Max gap, output ∪ filesystem growth, `+loaddll` | 4.63 s | No better than `fixme-all` + filesystem |
+| Prefix growth during boot | 331 MB, 1 → 2,027 files | Growth is continuous t=2 s → t=16.5 s, then flat for the final 7.3 s |
+| Cost of 1 Hz recursive walk (2,027 files) | **10.3 ms** | ~1 % of one core at 1 Hz; a `statfs` alternative costs 2.9 ms |
+
+**Caveat on these numbers.** The machine had already Rosetta-translated and cached the engine's binaries. A genuine first run on a friend's Mac pays one-time Rosetta AOT translation that these runs did not, so **59 s is a floor, not a typical cold figure.** The weights in §4.2 use it anyway because the ETA recalibration in §7.3 exists precisely to absorb this class of error, and 59 s is a far better starting point than the 180 s guess it replaces. A cold-machine calibration run is a plan step (§13.4).
+
 **Corrected size copy.** The canonical figures are **177 MB download / ~700 MB installed**, replacing three mutually inconsistent strings: `WizardWindow.swift:256` ("about 1.7 GB" — wrong by ~10×), `AppDelegate.swift:79` ("~200 MB download"), `ProgressWindow.swift:58` ("~1 GB"). These become one constant, `SetupCopy.engineSizeSummary`, referenced from all three sites.
 
 ---
@@ -119,16 +138,18 @@ public struct SetupStage: Sendable {
 }
 ```
 
-**The six stages and their weights.** Weights are the stage's share of a reference run, derived from §3. Reference seconds: preflight 2, download 90, unpack 60, prefix 180, NWS download 25, NWS install 35 — total 392 s.
+**The six stages and their weights.** Weights are the stage's share of a reference run, derived from §3. Reference seconds: preflight 2, download 90, unpack 60, **prefix 59 (measured, §3.1)**, NWS download 25, NWS install 35 — total 271 s.
+
+> **Revised 2026-08-08 by spike.** The prefix reference was 180 s, an estimate. Direct measurement put it at **59 s**, dropping stage 4's weight from 46 to 22 and roughly halving the assumed run length. Stages 2 and 3 remain estimates (§11 R2a).
 
 | # | ID | Display name | Weight | Resumable | Retry | Ceiling |
 |---|---|---|---|---|---|---|
 | 1 | `preflight` | Checking your Mac | 1 | n/a | none | 15 s |
-| 2 | `downloadEngine` | Downloading the Windows environment | 23 | **yes** (HTTP Range) | 3 × network, then 2 × integrity | 60 s idle |
-| 3 | `unpackEngine` | Unpacking the Windows environment | 15 | no (restartable from the verified archive) | none (restart is free) | 900 s |
-| 4 | `preparePrefix` | Preparing the Windows environment | **46** | **no — atomic** | none (manual only) | 900 s |
-| 5 | `downloadNWS` | Downloading New World Scheduler | 6 | **yes** (new) | 3 × network | 600 s idle |
-| 6 | `installNWS` | Installing New World Scheduler | 9 | no | none (manual only) | 1200 s |
+| 2 | `downloadEngine` | Downloading the Windows environment | 33 | **yes** (HTTP Range) | 3 × network, then 2 × integrity | 60 s idle |
+| 3 | `unpackEngine` | Unpacking the Windows environment | 22 | no (restartable from the verified archive) | none (restart is free) | 900 s |
+| 4 | `preparePrefix` | Preparing the Windows environment | **22** | **no — atomic** | none (manual only) | 900 s |
+| 5 | `downloadNWS` | Downloading New World Scheduler | 9 | **yes** (new) | 3 × network | 600 s idle |
+| 6 | `installNWS` | Installing New World Scheduler | 13 | no | none (manual only) | 1200 s |
 
 Weights are static defaults. The ETA calculation (§7.3) rescales them from observed cost, so a slow network does not make the bar lie for the whole run.
 
@@ -173,24 +194,33 @@ public final class ChildRegistry: Sendable {
 
 `PrefixManager.ensurePrefix` (`PrefixManager.swift:49-148`) gains a progress callback. It runs seven sub-steps with intra-stage weights:
 
-| Sub-step | Source | Weight | UI detail line |
-|---|---|---|---|
-| 4a `wineboot --init` | `PrefixManager.swift:64-69` | 55 | "Setting up Windows for the first time…" |
-| 4b `wineserver -w` drain | `:71-72` | 10 | "Finishing background setup…" |
-| 4c Mono/Gecko verify | `:78-84` | 1 | "Checking .NET and browser support…" |
-| 4d Retina / DPI / WPF registry | `:87-109` | 3 | "Configuring display settings…" |
-| 4e Font provisioning — **57 counted writes** | `:178-207` | 28 | "Registering fonts (N of 57)…" |
-| 4f Folder linking | `:119-142` | 2 | "Linking your Documents and Downloads…" |
-| 4g Ready marker | `:144-147` | 1 | "Finishing up…" |
+Weights below are **measured** (§3.1), not estimated.
 
-4e is the easy win: `FontProvisioning.substitutions` has a known count, so the loop emits `stageProgress` per write. That converts roughly 20–60 s of the silence into a visibly advancing counter.
+| Sub-step | Source | Weight | Measured | UI detail line |
+|---|---|---|---|---|
+| 4a `wineboot --init` | `PrefixManager.swift:64-69` | 40 | 24 s | "Setting up Windows for the first time…" |
+| 4b `wineserver -w` drain | `:71-72` | 2 | ~1 s | "Finishing background setup…" |
+| 4c Mono/Gecko verify | `:78-84` | 1 | <0.5 s | "Checking .NET and browser support…" |
+| 4d Retina / DPI / WPF registry | `:87-109` | 3 | 1.7 s | "Configuring display settings…" |
+| 4e Font provisioning — **57 counted writes** | `:178-207` | 52 | ~32 s | "Registering fonts (N of 57)…" |
+| 4f Folder linking | `:119-142` | 1 | <0.5 s | "Linking your Documents and Downloads…" |
+| 4g Ready marker | `:144-147` | 1 | ~0 | "Finishing up…" |
 
-**4a is the hard part** and needs a heartbeat rather than a fraction. Two signals, both required:
+**4e turns out to be the largest sub-step, not 4a** — 57 writes × 559 ms ≈ 32 s against the boot's 24 s. It is also the easiest to report: `FontProvisioning.substitutions` has a known count, so the loop emits `stageProgress` per write and the 559 ms cadence is itself a strong liveness signal. Over half of stage 4 becomes a visibly advancing counter for free.
 
-1. **Streamed output.** `wineboot`'s combined output is teed to `SetupLog` as it arrives; the disclosure triangle shows the last line live. `Subprocess`'s readability handler (`Subprocess.swift:52-61`) already receives chunks — the change is to surface them, not to add plumbing.
-2. **Elapsed time.** The UI always shows time-in-step, so even a genuinely quiet second is distinguishable from a hang.
+**4a — heartbeat mechanism (verified by spike, §3.1).** `wineboot` gets a **dual signal**, and both parts are required because neither is sufficient alone:
 
-**Open experiment (§11, R3):** the setup environment sets `WINEDEBUG=fixme-all` (`Paths.swift:69`), which suppresses fixme channels and may leave `wineboot` too quiet for a useful heartbeat. Proposed fix is a setup-only `WINEDEBUG` value adding a dense low-cost channel (`+loaddll` is the candidate — one line per DLL load, hundreds during a cold boot). This must be measured before it is adopted: it changes log volume and could change timing. If it proves unusable, 4a falls back to elapsed-time-only liveness plus the stall watchdog, which is still a strict improvement on today.
+1. **Streamed output.** `wineboot`'s combined output is teed to `SetupLog` as it arrives; the disclosure triangle shows the last line live. `Subprocess`'s readability handler (`Subprocess.swift:52-61`) already receives chunks — the change is to surface them, not to add plumbing. Measured worst gap with today's `WINEDEBUG`: **9.71 s** — marginal on its own.
+2. **Prefix filesystem growth, polled at 1 Hz.** The prefix grows 1 → 2,027 files / 331 MB during the boot. A poll that records entry count and total size, emitting `stageProgress` whenever either advances. Measured worst gap on its own: **7.3 s** (the boot's final 7.3 s writes nothing).
+
+**Union of the two: worst gap 4.47 s** — comfortable against the 10 s criterion (§14.1), with ~2.2× margin on a fast machine. The two signals are complementary by nature: filesystem growth covers the boot's quiet mid-section, and output covers its flat tail.
+
+**`WINEDEBUG` stays exactly as it is — `+loaddll` is rejected.** The spike tested it: it cuts the output-only gap to 4.63 s, but combined with filesystem polling it scores *no better* than the untouched `fixme-all` (4.63 s vs 4.47 s). It is therefore all cost and no benefit:
+
+- `WINEDEBUG` is set in `WineEnvironment.build` (`Paths.swift:65-72`), which is shared by `Runner.launch` and every `reg add`. Changing it there would add ~735 lines to *every app launch's* `wine.log`, so adopting it would require a setup-only override — a new divergence between the setup and launch environments for no measured gain.
+- It adds ~101 KB of log per boot.
+
+Leaving `Paths.swift:69` untouched is the cheapest correct outcome, and it removes the spec's largest unknown.
 
 ### 5.2 Stage 3 — sub-progress for unpack
 
@@ -292,15 +322,15 @@ The wizard's setup step (`WizardWindow.swift:263-307`) is replaced by a calm, fi
   Setting up New World Scheduler
 
   Step 4 of 6 — Preparing the Windows environment
-  ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░░░░░░░░░░  76%
+  ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░░░░░░░░░░░░  71%
   Registering fonts (23 of 57)
 
-  4 min 58 sec elapsed · about 2 min remaining
+  3 min 12 sec elapsed · about 1 min remaining
 
   ▸ Details                                    [ Cancel ]
 ```
 
-*(The 76 % is worked through, not decorative: stages 1–3 complete = 1 + 23 + 15 = 39; within stage 4, sub-steps 4a–4d = 55 + 10 + 1 + 3 = 69 of 100 plus fonts at 23/57 × 28 = 11.3, giving 80.3 % of a 46-weight stage = 36.9. Total 75.9 %. Any implementation whose bar disagrees with this walkthrough has a weighting bug.)*
+*(The 71 % is worked through, not decorative: stages 1–3 complete = 1 + 33 + 22 = 56; within stage 4, sub-steps 4a–4d = 40 + 2 + 1 + 3 = 46 of 100, plus fonts at 23/57 × 52 = 21.0, giving 67.0 % of a 22-weight stage = 14.7. Total 70.7 %. Elapsed follows the same arithmetic: 152 s for stages 1–3, 27 s through 4d, 12.9 s of font writes = 192 s. Any implementation whose bar disagrees with this walkthrough has a weighting bug.)*
 
 Expanded:
 
@@ -516,11 +546,15 @@ One constant, three sites: `WizardWindow.swift:256`, `AppDelegate.swift:79`, `Pr
 
 ## 11. Risks and open questions
 
-**R1 — The atomic prefix makes cancel expensive, by decision.** Stage 4 carries 46 % of the run's weight and is the one stage that cannot resume. A user who quits at 95 % of stage 4 loses ~3 minutes. This is a direct, accepted consequence of the settled resume-granularity decision; the mitigation is honesty in the confirm sheet (§8.1), not engineering. *If this proves painful in practice, the cheapest future relief is not sub-checkpointing but making stage 4 faster — batching the 57 `reg add` spawns into one `regedit`-file import would remove ~20–60 s of it.* Noted, not specified.
+**R1 — The atomic prefix makes cancel expensive, by decision — but far less than first thought.** Stage 4 is the one stage that cannot resume, so quitting near its end discards the whole of it. The original draft put that at 46 % of the run and ~3 minutes of lost work, which made the settled resume-granularity decision look costly. **Measurement (§3.1) revised it to 22 % and ~59 s.** Losing a minute is a materially easier thing to explain in the confirm sheet than losing three, so the decision now carries much less UX debt than flagged. The mitigation remains honesty in the sheet (§8.1), not engineering.
+
+*Cheapest future relief, if it ever bites:* not sub-checkpointing, but making stage 4 faster. The spike showed **fonts (4e) are 52 % of the stage — ~32 s across 57 spawned `wine reg add` processes at 559 ms each.** Batching them into a single `regedit` file import would plausibly remove most of it and shrink the non-resumable window to ~27 s. Attractive, and now quantified. Still out of scope here — noted, not specified.
 
 **R2 — ETA will sometimes be visibly wrong.** Static weights assume a reference network. On a 5 Mbit link stage 2 alone can exceed the whole reference run, inverting the weighting until recalibration kicks in after stage 2 completes. §7.3's suppression rule and coarse granularity reduce the damage but do not remove it. A visibly wrong estimate erodes trust in the whole panel — the exact problem this work exists to fix. Accepted with mitigation; worth revisiting if testing shows it misleads.
 
-**R3 — The `wineboot` heartbeat is unproven.** `WINEDEBUG=fixme-all` (`Paths.swift:69`) may leave stage 4a too quiet to stream anything useful. The `+loaddll` proposal (§5.1) is a hypothesis and must be measured before adoption; it changes log volume and could perturb timing. **This is the single largest unknown in the spec.** If it fails, stage 4a degrades to elapsed-time liveness plus the stall watchdog — still better than today, but the silent-gap fix would be partial in exactly the place the user complained about.
+**R3 — RESOLVED by spike, 2026-08-08.** Was: "the `wineboot` heartbeat is unproven, the single largest unknown in the spec." Measurement (§3.1) found a working signal: **output ∪ 1 Hz prefix filesystem growth, worst gap 4.47 s** against a 10 s criterion, with `WINEDEBUG` left untouched. `+loaddll` was tested and rejected as no better than the free option. The residual risk is only that both figures come from a fast M2 with a warm Rosetta cache — see R2a.
+
+**R2a — Stage weights rest on two remaining estimates and one warm-machine measurement.** Stages 2 (download, network-dependent) and 3 (unpack) were never measured; stage 4's 59 s came from a machine that had already Rosetta-translated the engine. On a cold, slower Mac all three grow, and not by the same factor — so the *ratios* that drive the bar may shift even though each absolute figure is a floor. §7.3's recalibration absorbs this within a run, but the first run on a new machine is exactly the one a user watches. Mitigation is the cold calibration in §13.4; until then, treat the weights as good defaults rather than settled constants.
 
 **R4 — Stall-watchdog false positives.** 60 s of silence is a heuristic. A slow Mac doing genuine work during Mono installation could trip it. The design deliberately makes `stalled` non-terminal and "Keep Waiting" cheap (it resets the detector and doubles the threshold to 120 s), so a false positive costs one click, not a failed setup. The threshold is a tunable constant, not a hardcoded literal.
 
@@ -585,12 +619,22 @@ Cancel at **each of the six stages**, then verify for every one:
 
 Plus: `make fresh` end-to-end with the notification path exercised; ⌘Q during each stage; the confirm sheet's stage-dependent wording verified against §8.1 for a resumable and a non-resumable stage.
 
+### 13.4 Cold-machine weight calibration
+
+The §4.2 weights rest on two estimates and one warm-machine measurement (R2a). One calibration run closes this, and it needs no new tooling — `SetupLog` already records per-stage elapsed times (§4.4).
+
+- Run `make fresh` on a Mac that has **never** run the engine (no Rosetta AOT cache), on a metered-bandwidth connection, and record all six stage durations from `setup.log`.
+- Recompute the weights from those durations and update §4.2 if any weight moves by more than ±5 points.
+- The developer's own Mac cannot serve for this: its Rosetta cache is warm and cannot be selectively cleared. **This step requires either a second machine or a user decision to accept the current defaults** — flagged rather than assumed.
+- The measured 59 s stage-4 floor is a useful lower bound to check the result against: a cold run below it means the run was not actually cold.
+
 ---
 
 ## 14. Acceptance criteria
 
 1. No stage goes more than **10 seconds** without *substantive* evidence of progress — a counter advance, a percentage change, or a new streamed log line. A ticking elapsed-time display does **not** satisfy this criterion; it ticks unconditionally and would make the requirement unfalsifiable.
-   - **Sole permitted exception:** sub-step 4a (`wineboot --init`) if experiment R3 shows no usable output channel exists. In that case 4a may fall back to elapsed-time-only liveness, and the exception must be recorded in the implementation notes with the measurement that justified it. No other stage may claim it.
+   - **No exceptions.** The spike (§3.1) confirmed every stage can meet this, including 4a, whose dual signal measured a 4.47 s worst gap. The earlier draft reserved an exception for 4a; it is no longer needed and must not be reintroduced without new measurement.
+   - Verified by instrumenting a real run and asserting the maximum inter-event gap, not by inspection.
 2. `setup.log` exists after any setup attempt, successful or not, and contains a stage-by-stage narrative with timings and the resume decisions taken.
 3. Closing the window, clicking Cancel, or pressing ⌘Q during setup always presents the confirm sheet; choosing Quit leaves zero orphaned processes and zero `staging-*` directories.
 4. Force-quitting during any stage leaves state that the next launch sweeps and resumes correctly.

@@ -66,7 +66,24 @@ Taken against the real pinned engine on a throwaway prefix (Apple M2, macOS 27, 
 | Prefix growth during boot | 331 MB, 1 → 2,027 files | Growth is continuous t=2 s → t=16.5 s, then flat for the final 7.3 s |
 | Cost of 1 Hz recursive walk (2,027 files) | **10.3 ms** | ~1 % of one core at 1 Hz; a `statfs` alternative costs 2.9 ms |
 
-**Caveat on these numbers.** The machine had already Rosetta-translated and cached the engine's binaries. A genuine first run on a friend's Mac pays one-time Rosetta AOT translation that these runs did not, so **59 s is a floor, not a typical cold figure.** The weights in §4.2 use it anyway because the ETA recalibration in §7.3 exists precisely to absorb this class of error, and 59 s is a far better starting point than the 180 s guess it replaces. A cold-machine calibration run is a plan step (§13.4).
+### 3.2 Font-batching spike (2026-08-08)
+
+Ran both font-provisioning methods on two freshly-booted throwaway prefixes and diffed the resulting registry subtrees.
+
+| Quantity | Measured |
+|---|---|
+| 57 individual `wine reg add` calls | **24.38 s** |
+| One `wine regedit fonts.reg` import | **1.54 s** |
+| Speedup | **15.8×, saving 22.8 s** |
+| Registry equivalence | **Byte-identical.** 647 value lines each, across all five affected keys |
+
+The diff covered `Software\Wine\Fonts\Replacements` (user.reg), and both the native and `Wow6432Node`-redirected views of `…\CurrentVersion\FontSubstitutes` and `…\CurrentVersion\Fonts` (system.reg). The WoW64 redirection was checked deliberately: `reg add` and `regedit` could plausibly have landed in different views, and they do not.
+
+> **Method note.** The first run of this comparison reported "identical" from two *empty* extractions — `awk -v` consumes backslashes, so the registry key patterns never matched. The figures above are from the corrected extraction, which recovers 647 value lines per side. An equivalence result that compares nothing looks exactly like a pass.
+
+**Caveat on all of the above.** The machine had already Rosetta-translated and cached the engine's binaries. A genuine first run on a friend's Mac pays one-time Rosetta AOT translation that these runs did not, so every figure here is **a floor, not a typical cold value** — the 24 s boot, the 559 ms per `reg add`, and the 1.54 s import alike. The weights in §4.2 use them anyway, because the ETA recalibration in §7.3 exists precisely to absorb this class of error and a measured floor beats the 180 s guess it replaces. A cold-machine calibration run is a plan step (§13.4).
+
+Note the two spikes measured the per-write path independently and agreed closely: 32 s projected from 10 timed writes (§3.1) against 24.38 s for the real 57 (§3.2). The gap is warm-cache drift across runs; both support the same conclusion.
 
 **Corrected size copy.** The canonical figures are **177 MB download / ~700 MB installed**, replacing three mutually inconsistent strings: `WizardWindow.swift:256` ("about 1.7 GB" — wrong by ~10×), `AppDelegate.swift:79` ("~200 MB download"), `ProgressWindow.swift:58` ("~1 GB"). These become one constant, `SetupCopy.engineSizeSummary`, referenced from all three sites.
 
@@ -120,7 +137,7 @@ public enum SetupEvent: Sendable {
 }
 ```
 
-`detail` is the plain-English sub-line ("Registering fonts (23 of 57)"). The technical line shown under the disclosure triangle comes from the tail of `SetupLog`, not from the event.
+`detail` is the plain-English sub-line ("Unpacking… 4,210 of 5,600 files", "Setting up Windows for the first time…"). The technical line shown under the disclosure triangle comes from the tail of `SetupLog`, not from the event.
 
 ### 4.2 SetupStage
 
@@ -138,18 +155,18 @@ public struct SetupStage: Sendable {
 }
 ```
 
-**The six stages and their weights.** Weights are the stage's share of a reference run, derived from §3. Reference seconds: preflight 2, download 90, unpack 60, **prefix 59 (measured, §3.1)**, NWS download 25, NWS install 35 — total 271 s.
+**The six stages and their weights.** Weights are the stage's share of a reference run, derived from §3. Reference seconds: preflight 2, download 90, unpack 60, **prefix 29 (measured, §3.1 + §3.2)**, NWS download 25, NWS install 35 — total 241 s.
 
-> **Revised 2026-08-08 by spike.** The prefix reference was 180 s, an estimate. Direct measurement put it at **59 s**, dropping stage 4's weight from 46 to 22 and roughly halving the assumed run length. Stages 2 and 3 remain estimates (§11 R2a).
+> **Revised twice on 2026-08-08 by spike.** The prefix reference began as a 180 s estimate. Direct measurement put it at 59 s (§3.1), then batching the font writes (§5.3) cut it to **29 s**. Stage 4's weight fell 46 → 22 → **12**. **These weights assume batched fonts**; if the batched import is ever reverted to the per-write path, stage 4 returns to ~59 s and the weights must be recomputed. Stages 2 and 3 remain estimates (§11 R2a).
 
 | # | ID | Display name | Weight | Resumable | Retry | Ceiling |
 |---|---|---|---|---|---|---|
 | 1 | `preflight` | Checking your Mac | 1 | n/a | none | 15 s |
-| 2 | `downloadEngine` | Downloading the Windows environment | 33 | **yes** (HTTP Range) | 3 × network, then 2 × integrity | 60 s idle |
-| 3 | `unpackEngine` | Unpacking the Windows environment | 22 | no (restartable from the verified archive) | none (restart is free) | 900 s |
-| 4 | `preparePrefix` | Preparing the Windows environment | **22** | **no — atomic** | none (manual only) | 900 s |
-| 5 | `downloadNWS` | Downloading New World Scheduler | 9 | **yes** (new) | 3 × network | 600 s idle |
-| 6 | `installNWS` | Installing New World Scheduler | 13 | no | none (manual only) | 1200 s |
+| 2 | `downloadEngine` | Downloading the Windows environment | 37 | **yes** (HTTP Range) | 3 × network, then 2 × integrity | 60 s idle |
+| 3 | `unpackEngine` | Unpacking the Windows environment | 25 | no (restartable from the verified archive) | none (restart is free) | 900 s |
+| 4 | `preparePrefix` | Preparing the Windows environment | **12** | **no — atomic** | none (manual only) | 900 s |
+| 5 | `downloadNWS` | Downloading New World Scheduler | 10 | **yes** (new) | 3 × network | 600 s idle |
+| 6 | `installNWS` | Installing New World Scheduler | 15 | no | none (manual only) | 1200 s |
 
 Weights are static defaults. The ETA calculation (§7.3) rescales them from observed cost, so a slow network does not make the bar lie for the whole run.
 
@@ -198,15 +215,15 @@ Weights below are **measured** (§3.1), not estimated.
 
 | Sub-step | Source | Weight | Measured | UI detail line |
 |---|---|---|---|---|
-| 4a `wineboot --init` | `PrefixManager.swift:64-69` | 40 | 24 s | "Setting up Windows for the first time…" |
-| 4b `wineserver -w` drain | `:71-72` | 2 | ~1 s | "Finishing background setup…" |
-| 4c Mono/Gecko verify | `:78-84` | 1 | <0.5 s | "Checking .NET and browser support…" |
-| 4d Retina / DPI / WPF registry | `:87-109` | 3 | 1.7 s | "Configuring display settings…" |
-| 4e Font provisioning — **57 counted writes** | `:178-207` | 52 | ~32 s | "Registering fonts (N of 57)…" |
+| 4a `wineboot --init` | `PrefixManager.swift:64-69` | **82** | 24 s | "Setting up Windows for the first time…" |
+| 4b `wineserver -w` drain | `:71-72` | 3 | ~1 s | "Finishing background setup…" |
+| 4c Mono/Gecko verify | `:78-84` | 2 | <0.5 s | "Checking .NET and browser support…" |
+| 4d Retina / DPI / WPF registry | `:87-109` | 6 | 1.7 s | "Configuring display settings…" |
+| 4e Font provisioning — **one batched import** (§5.3) | `:178-207` | 5 | 1.54 s | "Registering fonts…" |
 | 4f Folder linking | `:119-142` | 1 | <0.5 s | "Linking your Documents and Downloads…" |
 | 4g Ready marker | `:144-147` | 1 | ~0 | "Finishing up…" |
 
-**4e turns out to be the largest sub-step, not 4a** — 57 writes × 559 ms ≈ 32 s against the boot's 24 s. It is also the easiest to report: `FontProvisioning.substitutions` has a known count, so the loop emits `stageProgress` per write and the 559 ms cadence is itself a strong liveness signal. Over half of stage 4 becomes a visibly advancing counter for free.
+**Stage 4 is now dominated by 4a.** Before batching, fonts were 52 % of the stage and 4a only 40 %; after, 4a is 82 %. That is a real trade-off, not a free win — see §5.3.
 
 **4a — heartbeat mechanism (verified by spike, §3.1).** `wineboot` gets a **dual signal**, and both parts are required because neither is sufficient alone:
 
@@ -233,6 +250,26 @@ Log volume is bounded by writing every 200th line to `SetupLog` while counting a
 Quarantine stripping (`EngineManager.swift:357-364`) — `chmod -R` and `xattr -dr` over 5,324 entries — gets its own detail line ("Preparing the Windows files…"). It currently has no progress case at all.
 
 ---
+
+### 5.3 Batched font provisioning
+
+`provisionFonts` (`PrefixManager.swift:178-207`) spawns 57 separate `wine reg add` processes — 28 substitutions × 2 registry tables, plus the bundled FontAwesome registration — at 559 ms each. Measured (§3.2): **24.38 s spawning processes to write 57 short strings.** Replacing them with a single generated `.reg` file imported by `regedit` costs **1.54 s**, a 15.8× improvement that removes ~23 s from the one stage that cannot be resumed.
+
+**Generated file.** Written to a temporary path inside the prefix's own directory, deleted after import.
+
+- **Format `REGEDIT4`, ASCII.** Chosen over `Windows Registry Editor Version 5.00` because that format expects UTF-16LE and buys nothing here: every family name in `FontProvisioning.substitutions` (`FontProvisioning.swift:44-82`) is ASCII, as is `FontAwesome.ttf`. ASCII keeps the generator trivial and side-steps a BOM/encoding failure mode that would be silent.
+- Three key blocks, in this order: `HKEY_LOCAL_MACHINE\Software\Microsoft\Windows NT\CurrentVersion\Fonts` (the single FontAwesome value), `HKEY_LOCAL_MACHINE\Software\Microsoft\Windows NT\CurrentVersion\FontSubstitutes` (28 values), `HKEY_CURRENT_USER\Software\Wine\Fonts\Replacements` (28 values).
+- Values are `"<from>"="<to>"`, one per line, generated from the same `FontProvisioning.substitutions` table that drives the per-write path. **The table stays the single source of truth** — the `.reg` file is generated from it, never hand-maintained.
+
+**Invocation.** `wine regedit <path>` through the existing `Subprocess.run`, with the standard setup environment, a 120 s ceiling, and the `SetupLog` handle attached.
+
+**Best-effort, exactly as today.** A non-zero exit, a missing `regedit`, or a write failure is logged and swallowed. Font provisioning must never fail the prefix build — that is the existing contract at `PrefixManager.swift:178-181` and it does not change. A prefix whose fonts did not register still boots and still runs NWS; it may fall back to a less pleasing face.
+
+**The per-write path is retained**, behind `FontProvisioning.useBatchedImport` (default `true`). If the import proves unreliable on a machine we cannot inspect, flipping one flag restores the proven behaviour without a code revert. The flag is removed only after the batched path has survived real use.
+
+**Equivalence is the acceptance bar, not absence of errors.** §3.2 records a byte-identical diff of all five affected registry keys, including the WoW64-redirected views. Any future change to the generator must reproduce that diff.
+
+**The trade-off, stated plainly.** Batching removes the progress affordance that was going to cover half of stage 4: a 57-step counter ticking at 559 ms is excellent evidence of life, and a 1.5 s import is invisible. Stage 4 becomes 82 % `wineboot`, so the dual heartbeat of §5.1 — output plus filesystem growth — carries proportionally more weight than before. The net is still clearly favourable: 29 s of mostly-covered time beats 59 s of half-covered time, and the shortest non-resumable window is the one the user is least likely to sit through. But it does concentrate risk on R3's mechanism rather than diversifying away from it (§11 R3a).
 
 ## 6. State, journal, and resume
 
@@ -322,15 +359,17 @@ The wizard's setup step (`WizardWindow.swift:263-307`) is replaced by a calm, fi
   Setting up New World Scheduler
 
   Step 4 of 6 — Preparing the Windows environment
-  ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░░░░░░░░░░░░  71%
-  Registering fonts (23 of 57)
+  ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░░░░░░░░░░░░░  68%
+  Setting up Windows for the first time…
 
-  3 min 12 sec elapsed · about 1 min remaining
+  2 min 44 sec elapsed · about 1 min remaining
 
   ▸ Details                                    [ Cancel ]
 ```
 
-*(The 71 % is worked through, not decorative: stages 1–3 complete = 1 + 33 + 22 = 56; within stage 4, sub-steps 4a–4d = 40 + 2 + 1 + 3 = 46 of 100, plus fonts at 23/57 × 52 = 21.0, giving 67.0 % of a 22-weight stage = 14.7. Total 70.7 %. Elapsed follows the same arithmetic: 152 s for stages 1–3, 27 s through 4d, 12.9 s of font writes = 192 s. Any implementation whose bar disagrees with this walkthrough has a weighting bug.)*
+*(The 68 % is worked through, not decorative: stages 1–3 complete = 1 + 37 + 25 = 63; within stage 4, `wineboot` (4a) is half done = 0.5 × 82 = 41 % of a 12-weight stage = 4.9. Total 67.9 %. Elapsed follows the same arithmetic: 152 s for stages 1–3 plus 12 s into a 24 s boot = 164 s. Any implementation whose bar disagrees with this walkthrough has a weighting bug.)*
+
+*Note the detail line here is a heartbeat, not a counter — after font batching (§5.3), stage 4 is 82 % `wineboot`, which reports liveness rather than a fraction. The determinate counters now live in stage 3 (files unpacked) and the two download stages.*
 
 Expanded:
 
@@ -546,13 +585,13 @@ One constant, three sites: `WizardWindow.swift:256`, `AppDelegate.swift:79`, `Pr
 
 ## 11. Risks and open questions
 
-**R1 — The atomic prefix makes cancel expensive, by decision — but far less than first thought.** Stage 4 is the one stage that cannot resume, so quitting near its end discards the whole of it. The original draft put that at 46 % of the run and ~3 minutes of lost work, which made the settled resume-granularity decision look costly. **Measurement (§3.1) revised it to 22 % and ~59 s.** Losing a minute is a materially easier thing to explain in the confirm sheet than losing three, so the decision now carries much less UX debt than flagged. The mitigation remains honesty in the sheet (§8.1), not engineering.
-
-*Cheapest future relief, if it ever bites:* not sub-checkpointing, but making stage 4 faster. The spike showed **fonts (4e) are 52 % of the stage — ~32 s across 57 spawned `wine reg add` processes at 559 ms each.** Batching them into a single `regedit` file import would plausibly remove most of it and shrink the non-resumable window to ~27 s. Attractive, and now quantified. Still out of scope here — noted, not specified.
+**R1 — RESOLVED as a material risk.** Stage 4 is the one stage that cannot resume, so quitting near its end discards the whole of it. The original draft put that at 46 % of the run and ~3 minutes of lost work, which made the settled resume-granularity decision look costly. Two rounds of measurement and one optimisation reduced it to **12 % and ~29 s**: first by measuring the stage honestly (§3.1), then by batching the font writes (§5.3). Roughly half a minute of lost work is a small enough cost that the atomic-prefix decision now carries essentially no UX debt, and the confirm sheet can state it without apology.
 
 **R2 — ETA will sometimes be visibly wrong.** Static weights assume a reference network. On a 5 Mbit link stage 2 alone can exceed the whole reference run, inverting the weighting until recalibration kicks in after stage 2 completes. §7.3's suppression rule and coarse granularity reduce the damage but do not remove it. A visibly wrong estimate erodes trust in the whole panel — the exact problem this work exists to fix. Accepted with mitigation; worth revisiting if testing shows it misleads.
 
 **R3 — RESOLVED by spike, 2026-08-08.** Was: "the `wineboot` heartbeat is unproven, the single largest unknown in the spec." Measurement (§3.1) found a working signal: **output ∪ 1 Hz prefix filesystem growth, worst gap 4.47 s** against a 10 s criterion, with `WINEDEBUG` left untouched. `+loaddll` was tested and rejected as no better than the free option. The residual risk is only that both figures come from a fast M2 with a warm Rosetta cache — see R2a.
+
+**R3a — Font batching concentrates risk on the heartbeat instead of diversifying away from it.** Before §5.3, stage 4 had two independent sources of progress evidence: the `wineboot` heartbeat (40 % of the stage) and a 57-step font counter ticking every 559 ms (52 %). After batching, the counter is a 1.5 s blip and the heartbeat covers 82 % of the stage alone. If R3's dual signal degrades on some machine — a quieter `wineboot`, or a filesystem poll that misses growth — there is no longer a second mechanism carrying half the stage. The net is still favourable (29 s of mostly-covered time beats 59 s of half-covered time), and the stall watchdog remains as a backstop, but the failure mode is now less graceful. Worth re-checking in the cold calibration run (§13.4): confirm the max inter-event gap during 4a on a cold machine still clears the 10 s criterion without the font counter propping it up.
 
 **R2a — Stage weights rest on two remaining estimates and one warm-machine measurement.** Stages 2 (download, network-dependent) and 3 (unpack) were never measured; stage 4's 59 s came from a machine that had already Rosetta-translated the engine. On a cold, slower Mac all three grow, and not by the same factor — so the *ratios* that drive the bar may shift even though each absolute figure is a floor. §7.3's recalibration absorbs this within a run, but the first run on a new machine is exactly the one a user watches. Mitigation is the cold calibration in §13.4; until then, treat the weights as good defaults rather than settled constants.
 

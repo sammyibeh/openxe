@@ -1,7 +1,7 @@
 # Setup Resilience — Design Specification
 
 **Date:** 2026-08-08 · **Author:** Kai Sørensen · **Status:** Approved design, pending implementation plan.
-**Supersedes:** design spec §4.4 (first-run progress window) and §4.7 (guided wizard) where they conflict.
+**Supersedes:** [`2026-07-06-openxe-design.md`](2026-07-06-openxe-design.md) §4.4 (first-run progress window) and §4.7 (guided wizard) where they conflict.
 **Motivation:** audit of 2026-08-08 against `main` @ `da5dd9a`, after a first-run install on a third-party Mac showed a multi-minute silent stretch with no evidence of life, no failure surface, and no defined quit behaviour.
 
 ---

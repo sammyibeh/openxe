@@ -76,7 +76,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let progress = ProgressWindowController()
         progressWindow = progress
         progress.show(message: needsEngine
-            ? "Setting up your Windows environment — one time, ~200 MB download."
+            ? "Setting up your Windows environment — \(SetupCopy.engineSizeSummary)."
             : "Finishing your Windows environment setup.")
 
         let engine = self.engine

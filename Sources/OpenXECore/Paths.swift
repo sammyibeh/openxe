@@ -49,6 +49,23 @@ public struct OpenXEPaths: Sendable {
         FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("Logs/OpenXE/wine.log")
     }
+
+    /// ~/Library/Logs/OpenXE/setup.log — the first-run narrative (spec §4.4).
+    /// Separate from wine.log, which stays scoped to program launches.
+    public var setupLog: URL {
+        FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Logs/OpenXE/setup.log")
+    }
+
+    /// Advisory record of setup progress (spec §6.2). The filesystem, not this
+    /// file, is authoritative for what is actually installed.
+    public var setupJournal: URL { root.appendingPathComponent("setup-journal.json") }
+
+    /// Where the NWS installer is downloaded. Was private to NWSInstaller;
+    /// the sweeper needs it too (spec §8.4).
+    public var nwsDownloadDirectory: URL {
+        root.appendingPathComponent("nws-download", isDirectory: true)
+    }
 }
 
 /// Environment construction for wine/wineserver subprocesses. Spec §4.3.

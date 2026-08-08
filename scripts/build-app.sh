@@ -4,6 +4,17 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+# A source file that exists locally but was never committed builds fine here and
+# breaks on every other clone. SPM compiles whatever is in Sources/, so nothing
+# else catches it. Warn loudly; do not block a work-in-progress build.
+if git rev-parse --git-dir >/dev/null 2>&1; then
+  UNTRACKED=$(git ls-files --others --exclude-standard -- 'Sources/**/*.swift')
+  if [ -n "$UNTRACKED" ]; then
+    echo "warning: uncommitted source files — this build would FAIL on a fresh clone:" >&2
+    echo "$UNTRACKED" | sed 's/^/  /' >&2
+  fi
+fi
+
 # Universal (arm64 + x86_64). A host-arch-only build would refuse to launch on
 # the other kind of Mac, and Intel Macs run the x86_64 Wine engine NATIVELY —
 # no Rosetta involved — so they are a first-class target, not a fallback.

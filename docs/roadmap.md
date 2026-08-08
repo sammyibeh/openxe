@@ -46,15 +46,36 @@ needing real Windows-side TLS (activation/update/sync over schannel) needs an en
 rebuilt `--with-gnutls` (adds an x86_64 gnutls dependency). This is an engine-build
 scope item, not a runner change. Reference: design spec §8, risk 8.
 
-## Known risk — Rosetta 2 sunset (macOS 28)
+## Known risk — Rosetta 2 cutback (macOS 28)
 
-The current engine is x86_64-only and depends on **Rosetta 2**, which Apple has
-signaled for retirement in **macOS 28 (fall 2027)**. This is the single biggest risk
-to the project. The hedge is architectural: the engine is **versioned and swappable**
-behind the `engine/current` contract, so an **arm64-native Wine** build drops in
-without touching the rest of the app. No arm64 engine is pinned or verified today —
-sourcing/validating one is a future work item, and a natural place for community help.
-Reference: design spec §8, risk 1.
+The current engine is x86_64-only. On **Intel** Macs it runs natively and Rosetta is
+never involved; on **Apple Silicon** it depends on **Rosetta 2**.
+
+Apple supports Rosetta 2 fully **through macOS 27** and **reduces it to a subset in
+macOS 28** (expected autumn 2027), intended for unmaintained Intel-framework games.
+That is a cutback rather than a clean removal — earlier wording here said
+"retirement", which overstated it — and it remains the single biggest risk to the
+project. **How OpenXE will respond is undecided; no commitment is made here.**
+
+The hedge is architectural: the engine is **versioned and swappable** behind the
+`engine/current` contract, so an **arm64-native Wine** build drops in without touching
+the rest of the app. No arm64 engine is pinned or verified today — sourcing and
+validating one is a future work item, and a natural place for community help.
+
+Note the other end of the same problem: **macOS 26 (Tahoe) is the last macOS release
+for Intel Macs**, so the Rosetta-free path has its own expiry.
+
+Reference: design spec §8 risk 1, and
+[`docs/platform-support.md`](platform-support.md) §5.
+
+## Known constraint — Gatekeeper on every first launch
+
+Notarization is out of scope by charter, so the app is **ad-hoc signed** and macOS
+blocks it on first launch for **every** user, on both architectures, before any
+OpenXE code runs. It is a larger onboarding barrier than Rosetta. The per-app approval
+path is documented in [`INSTALL.md`](../INSTALL.md); what has and has not been
+verified about it is in [`docs/platform-support.md`](platform-support.md) §4. This is
+an accepted cost of the no-notarization decision, not a backlog item.
 
 ## Explicitly out of scope (by design)
 

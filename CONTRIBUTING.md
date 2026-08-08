@@ -33,7 +33,9 @@ is "nothing," it probably shouldn't ship. Specifically:
 - **macOS 14+** (developed through macOS 27), Apple Silicon or Intel.
 - **Xcode Command Line Tools** (`xcode-select --install`) — provides Swift 6 and the
   toolchain. No Xcode project; OpenXE builds with SwiftPM from the command line.
-- **Rosetta 2** on Apple Silicon (to actually run the x86_64 Wine engine).
+- **Rosetta 2** on Apple Silicon (to actually run the x86_64 Wine engine). **Not
+  needed on Intel** — the engine runs natively there. Support matrix and verification
+  status: [`docs/platform-support.md`](docs/platform-support.md).
 - For building the Wine engine from source (optional): **Homebrew** and ~10–15 GB of
   free disk (see below).
 

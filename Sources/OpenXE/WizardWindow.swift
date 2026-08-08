@@ -265,6 +265,63 @@ final class WizardWindowController: NSObject, NSWindowDelegate {
             renderNWS()
             return
         }
+        // Rosetta gate (spec §6). The engine is an Intel build, so on Apple
+        // silicon every step below — starting with `wineboot --init` — fails
+        // with a raw EBADARCH the user cannot act on. Check first, explain in
+        // plain language, and offer the install before anything is downloaded.
+        Task {
+            guard await self.rosettaGatePassed() else { return }
+            self.beginEnvironmentSetup()
+        }
+    }
+
+    /// Returns true when the Windows environment can actually run here. On
+    /// failure the wizard is left idle with an explanation in the status line —
+    /// the user can read it, fix Rosetta, and press the button again.
+    private func rosettaGatePassed(gate: RosettaGate = RosettaGate()) async -> Bool {
+        setBusy(true)
+        setStatus(SetupCopy.rosettaChecking)
+        let outcome = await Task.detached(priority: .userInitiated) { gate.check() }.value
+        setBusy(false)
+        guard case .missing(let failure) = outcome else {
+            setStatus("")
+            return true
+        }
+
+        NSApp.activate(ignoringOtherApps: true)
+        let alert = NSAlert()
+        alert.messageText = SetupCopy.rosettaTitle
+        alert.informativeText = failure.userMessage + "\n\n" + failure.suggestedAction
+        if gate.offersInstall {
+            alert.addButton(withTitle: SetupCopy.rosettaInstallButton)
+            alert.addButton(withTitle: SetupCopy.rosettaNotNowButton)
+        } else {
+            // Remediation withheld (see RosettaGate): explain, do not promise.
+            alert.addButton(withTitle: SetupCopy.rosettaDismissButton)
+        }
+        let response = alert.runModal()
+        guard gate.offersInstall, response == .alertFirstButtonReturn else {
+            setStatus(SetupCopy.rosettaBlockedStatus, isError: true)
+            return false
+        }
+
+        setBusy(true)
+        setStatus(SetupCopy.rosettaInstalling)
+        let install = await Task.detached(priority: .userInitiated) { gate.attemptInstall() }.value
+        setBusy(false)
+        switch install {
+        case .installed:
+            setStatus("")
+            return true
+        case .failed(let f):
+            // Apple's installer can report success and change nothing, or be
+            // unavailable entirely. Either way the user gets a readable reason.
+            setStatus("\(f.userMessage) \(f.suggestedAction)", isError: true)
+            return false
+        }
+    }
+
+    private func beginEnvironmentSetup() {
         setBusy(true)
         setStatus("Preparing the Windows environment…")
 

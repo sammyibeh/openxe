@@ -291,7 +291,11 @@ final class WizardWindowController: NSObject, NSWindowDelegate {
         NSApp.activate(ignoringOtherApps: true)
         let alert = NSAlert()
         alert.messageText = SetupCopy.rosettaTitle
-        alert.informativeText = failure.userMessage + "\n\n" + failure.suggestedAction
+        // The deprecation note goes in before macOS gets a chance to raise its
+        // own "Rosetta is being discontinued" warning on a translated launch.
+        alert.informativeText = [failure.userMessage,
+                                 failure.suggestedAction,
+                                 SetupCopy.rosettaDeprecationNote].joined(separator: "\n\n")
         if gate.offersInstall {
             alert.addButton(withTitle: SetupCopy.rosettaInstallButton)
             alert.addButton(withTitle: SetupCopy.rosettaNotNowButton)
@@ -306,8 +310,16 @@ final class WizardWindowController: NSObject, NSWindowDelegate {
         }
 
         setBusy(true)
-        setStatus(SetupCopy.rosettaInstalling)
-        let install = await Task.detached(priority: .userInitiated) { gate.attemptInstall() }.value
+        let ticker = InstallTicker { [weak self] message in self?.setStatus(message) }
+        let install = await Task.detached(priority: .userInitiated) {
+            gate.attemptInstall(onStatus: { phase in
+                Task { @MainActor in
+                    ticker.pinnedMessage = phase == .awaitingAuthorization
+                        ? phase.statusMessage : nil
+                }
+            })
+        }.value
+        ticker.stop()
         setBusy(false)
         switch install {
         case .installed:

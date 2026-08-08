@@ -173,7 +173,7 @@ final class RosettaRemediationTests: XCTestCase {
             installer: { (1, "Error: failed to authorize for installation.") },
             authorizedInstaller: { (1, "execution error: User canceled. (-128)") },
             offersInstall: true)
-        _ = gate.attemptInstall(onStatus: { recorder.record($0) })
+        _ = gate.attemptInstall(onStatus: { recorder.record($0.statusMessage) })
         XCTAssertGreaterThanOrEqual(recorder.calls.count, 2,
                                     "the UI needs a status for the install and for the password step")
         for message in recorder.calls {

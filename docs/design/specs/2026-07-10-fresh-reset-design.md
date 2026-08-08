@@ -49,13 +49,41 @@ Steps, in order:
    - The `dev.openxe.OpenXE` defaults domain (`defaults delete`; tolerate
      "domain not found")
    - `~/Library/Logs/OpenXE/`
-4. **Re-arm Gatekeeper (optional).** `--quarantine <path-to-OpenXE.app>` re-applies
-   the `com.apple.quarantine` attribute recursively to that app copy so the next
-   open shows the genuine first-open Gatekeeper prompt. No default path — the flag
-   is explicit or the step is skipped.
+4. **Re-arm Gatekeeper (optional).** `--quarantine <path-to-OpenXE.app>` makes the
+   next open of that app copy show the genuine first-open Gatekeeper prompt. No
+   default path — the flag is explicit or the step is skipped.
+
+   Re-applying `com.apple.quarantine` is necessary but **not sufficient**, and
+   this was the original defect: macOS caches the user's approval in
+   `/var/db/SystemPolicyConfiguration/ExecPolicy`, keyed on the bundle's
+   code-directory hash. Verified 2026-08-09: that file is SIP-`restricted`
+   (unwritable even as root), and this OS's `spctl` exposes only `--assess`,
+   `--status` and `--global-disable` — no add/remove/reset. An already-approved
+   bundle therefore keeps launching straight through no matter how often its
+   quarantine xattr is rewritten, and the reset silently produced a machine that
+   was not in a first-run state.
+
+   The step therefore does two things, and verifies both:
+   - **A cdhash this Mac has never approved.** `CFBundleVersion` is bumped to a
+     UTC timestamp and the bundle is re-signed ad-hoc exactly as `build-app.sh`
+     signs it (`codesign --force -s -`, then `--verify --strict` and a per-slice
+     check). `CFBundleVersion` appears only in `Resources/Info.plist` and no
+     OpenXE source reads it, so the build under test is otherwise unchanged. The
+     hash is read before and after and must differ.
+   - **The quarantine xattr, confirmed present on the bundle root** — the one
+     LaunchServices reads — rather than trusting the recursive write's status.
+
+   Then `lsregister -f` re-registers the rewritten bundle. If any of this fails,
+   the script says exactly what it could not reset and exits non-zero: a reset
+   that silently fails to reset would corrupt the cold-Mac calibration this
+   script exists to enable.
+
+   **This must be re-run after every `make app`.** A rebuild restores
+   `CFBundleVersion=1` and with it the original, already-approved cdhash.
 5. **Verify and report.** Confirm each wiped path no longer exists; print a final
    "fresh state confirmed — next launch runs the wizard from step 1" line, or list
-   anything that survived and exit non-zero.
+   anything that survived and exit non-zero. A failed Gatekeeper re-arm is
+   reported and exits non-zero even when every path was wiped cleanly.
 
 ### Flags
 
@@ -63,7 +91,7 @@ Steps, in order:
 |---|---|
 | `--yes` | Skip the confirmation prompt |
 | `--dry-run` | Print everything that would be deleted, delete nothing, exit 0 |
-| `--quarantine <path>` | Also re-apply quarantine to the given OpenXE.app copy |
+| `--quarantine <path>` | Also re-arm Gatekeeper on the given OpenXE.app copy: fresh cdhash + quarantine, both verified |
 
 `--dry-run` exists so the script itself can be tested without destroying state.
 

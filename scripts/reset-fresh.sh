@@ -27,13 +27,114 @@
 #   --yes                Skip the confirmation prompt
 #   --dry-run            Print everything that would be deleted, delete
 #                        nothing, exit 0
-#   --quarantine <path>  Also re-apply com.apple.quarantine recursively to the
-#                        given OpenXE.app copy so the next open shows the
-#                        genuine first-open Gatekeeper prompt. No default path.
+#   --quarantine <path>  Also re-arm Gatekeeper on the given OpenXE.app copy so
+#                        the next open shows the genuine first-open prompt.
+#                        Re-applying com.apple.quarantine is NOT enough on its
+#                        own — see rearm_gatekeeper below — so this also gives
+#                        the bundle a code-directory hash this Mac has never
+#                        approved, by bumping CFBundleVersion and re-signing
+#                        ad-hoc. Both steps are verified; it fails loudly rather
+#                        than reporting a reset it did not perform. Re-run it
+#                        AFTER every `make app`, because a rebuild restores the
+#                        original (already-approved) cdhash. No default path.
 set -euo pipefail
 
 log() { echo "$*"; }
 err() { echo "error: $*" >&2; }
+
+cdhash_of() {
+  codesign -dvvv "$1" 2>&1 | sed -n 's/^CDHash=//p' | head -1 || true
+}
+
+# Re-arming Gatekeeper takes more than re-applying the quarantine xattr, which
+# is all this script used to do — and it silently did not work.
+#
+# macOS caches the user's approval of a bundle in
+# /var/db/SystemPolicyConfiguration/ExecPolicy, keyed on the bundle's
+# code-directory hash. Verified on this machine 2026-08-09: that file is
+# SIP-`restricted` (unwritable even as root, `ls -lO`), and this OS's spctl
+# offers only --assess / --status / --global-disable — no --add, --remove or
+# --reset. So once a cdhash has been approved, the bundle keeps launching
+# straight through however many times its quarantine xattr is rewritten. A
+# reset that silently fails to reset would corrupt exactly the cold-Mac
+# calibration this script exists to enable.
+#
+# The one lever that works without root is the cdhash itself: give the bundle a
+# code directory this Mac has never seen and the cache simply misses. Bumping
+# CFBundleVersion does that. It is the safest possible change: it appears only
+# in Resources/Info.plist and no OpenXE source reads it, so the build under test
+# is otherwise byte-identical.
+#
+# Every step is verified. If the cdhash does not actually change, or the
+# quarantine xattr does not land on the bundle root, this fails loudly and says
+# what it could not reset.
+rearm_gatekeeper() {
+  local app="$1" before after stamp a
+  before=$(cdhash_of "$app")
+  if [ -z "$before" ]; then
+    err "cannot read the code-directory hash of $app — is it signed?"
+    return 1
+  fi
+  log "Re-arming Gatekeeper on $app"
+  log "  cdhash before:  $before"
+
+  stamp=$(date -u +%Y%m%d%H%M%S)
+  if ! /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $stamp" \
+        "$app/Contents/Info.plist" >/dev/null 2>&1; then
+    err "could not set CFBundleVersion in $app/Contents/Info.plist"
+    return 1
+  fi
+  # Ad-hoc, exactly as scripts/build-app.sh signs it. Verify strictly and
+  # per-slice so a re-arm can never hand back a half-signed universal bundle.
+  if ! codesign --force -s - "$app" >/dev/null 2>&1; then
+    err "ad-hoc re-signing failed for $app"
+    return 1
+  fi
+  if ! codesign --verify --strict "$app" >/dev/null 2>&1; then
+    err "$app does not verify after re-signing"
+    return 1
+  fi
+  for a in arm64 x86_64; do
+    if ! codesign -dv --arch "$a" "$app" >/dev/null 2>&1; then
+      err "the $a slice is not signed after re-signing $app"
+      return 1
+    fi
+  done
+
+  after=$(cdhash_of "$app")
+  if [ -z "$after" ] || [ "$after" = "$before" ]; then
+    err "cdhash did not change (still ${before})."
+    err "Gatekeeper's approval cache is keyed on it and lives in the"
+    err "SIP-protected /var/db/SystemPolicyConfiguration/ExecPolicy, which no"
+    err "script can clear. If this Mac has already approved this build, the"
+    err "next open will NOT show the first-open prompt. Test on a Mac that has"
+    err "never run it, or change the bundle so its cdhash differs."
+    return 1
+  fi
+  log "  cdhash after:   $after  (CFBundleVersion=$stamp)"
+
+  # 0081 = downloaded-file flags; next open gets the first-open Gatekeeper prompt.
+  if ! xattr -r -w com.apple.quarantine \
+        "0081;$(printf '%x' "$(date +%s)");reset-fresh;" "$app"; then
+    err "could not write com.apple.quarantine to $app"
+    return 1
+  fi
+  # The bundle root's xattr is the one LaunchServices reads; confirm it stuck
+  # rather than trusting the recursive write's exit status.
+  if ! xattr -p com.apple.quarantine "$app" >/dev/null 2>&1; then
+    err "com.apple.quarantine did not stick on the bundle root of $app"
+    return 1
+  fi
+  log "  quarantine:     $(xattr -p com.apple.quarantine "$app")"
+
+  # LaunchServices has the pre-bump bundle cached; re-register so the next open
+  # resolves against what we just rewrote.
+  "$LSREGISTER" -f "$app" >/dev/null 2>&1 || true
+
+  log "Gatekeeper re-armed: this Mac has never approved cdhash $after."
+  log "NOTE: re-run this after every \`make app\` — a rebuild restores"
+  log "CFBundleVersion=1 and with it the original, already-approved cdhash."
+}
 
 OPENXE_ROOT="${HOME:?HOME is not set}/Library/Application Support/OpenXE"
 OPENXE_LOGS="$HOME/Library/Logs/OpenXE"
@@ -56,7 +157,7 @@ while [ "$#" -gt 0 ]; do
       fi
       QUARANTINE_APP="$2"; shift ;;
     -h|--help)
-      sed -n '2,33p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+      sed -n '2,39p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) err "unknown flag: $1 (see --help)"; exit 2 ;;
   esac
   shift
@@ -149,7 +250,10 @@ if [ "$FOUND_ANY" -eq 0 ]; then
   log "  (nothing — this machine is already in a fresh state)"
 fi
 if [ -n "$QUARANTINE_APP" ]; then
-  log "Will re-apply com.apple.quarantine recursively to: $QUARANTINE_APP"
+  log "Will re-arm Gatekeeper on: $QUARANTINE_APP"
+  log "  (bumps CFBundleVersion + re-signs ad-hoc for a fresh cdhash, then"
+  log "   re-applies com.apple.quarantine — see rearm_gatekeeper for why the"
+  log "   xattr alone does nothing once this Mac has approved the build)"
 fi
 log "Never touched: ~/Documents, ~/Downloads, ~/Desktop (prefix symlinks only),"
 log "the repo working tree, dist/, ~/.cache/openxe-engine-build."
@@ -219,11 +323,9 @@ if [ -d "$OPENXE_LOGS" ]; then
 fi
 
 # ---- step 4: re-arm Gatekeeper (optional) ------------------------------------
+REARM_FAILED=0
 if [ -n "$QUARANTINE_APP" ]; then
-  log "Re-applying quarantine to $QUARANTINE_APP ..."
-  # 0081 = downloaded-file flags; next open gets the first-open Gatekeeper prompt.
-  xattr -r -w com.apple.quarantine \
-    "0081;$(printf '%x' "$(date +%s)");reset-fresh;" "$QUARANTINE_APP"
+  rearm_gatekeeper "$QUARANTINE_APP" || REARM_FAILED=1
 fi
 
 # ---- step 5: verify and report ------------------------------------------------
@@ -240,6 +342,15 @@ fi
 if [ "${#SURVIVORS[@]}" -gt 0 ]; then
   err "reset incomplete — the following survived:"
   for s in "${SURVIVORS[@]}"; do echo "  $s" >&2; done
+  exit 1
+fi
+# The OpenXE state is gone either way; a failed Gatekeeper re-arm still means
+# this is NOT a first-run state, and saying so is the whole point of the check.
+if [ "$REARM_FAILED" -eq 1 ]; then
+  err ""
+  err "OpenXE state was wiped, but Gatekeeper was NOT re-armed (see above)."
+  err "The next open will skip the first-open prompt — do not treat this as a"
+  err "cold-Mac run."
   exit 1
 fi
 log ""

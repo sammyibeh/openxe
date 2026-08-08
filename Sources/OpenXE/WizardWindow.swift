@@ -253,8 +253,8 @@ final class WizardWindowController: NSObject, NSWindowDelegate {
         } else {
             bodyStack.addArrangedSubview(paragraph(
                 "OpenXE needs to prepare a small Windows environment the first time you "
-                + "run it. This is a one-time download of about 1.7 GB and can take several "
-                + "minutes. You only do this once."))
+                + "run it. This is \(SetupCopy.engineSizeSummary). It can take several "
+                + "minutes, and you only do this once."))
             primaryButton.title = "Set Up"
         }
         primaryButton.isEnabled = true

@@ -55,7 +55,7 @@ final class ProgressWindowController {
         case .verifying:
             setIndeterminate(message: "Verifying download…")
         case .extracting:
-            setIndeterminate(message: "Unpacking engine (~1 GB)…")
+            setIndeterminate(message: "Unpacking the Windows environment (about 700 MB)…")
         }
     }
 

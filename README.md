@@ -145,19 +145,46 @@ either way. Details: [`docs/distribution.md`](docs/distribution.md).
 
 ### The Rosetta 2 hedge (honest risk)
 
-The current engine is **x86_64-only** and needs **Rosetta 2** on Apple Silicon.
-Apple has signaled Rosetta 2 retirement in **macOS 28 (fall 2027)**. That is a real
-risk to any x86_64 Wine runner. OpenXE's mitigation is architectural, not wishful:
-the engine directory is **versioned and swappable**, so an arm64-native Wine build
-(from upstream Wine's ARM work or a future community build) drops in behind the same
+The app binary is **universal** (arm64 + x86_64), but the Wine engine is
+**x86_64-only**. On **Intel** Macs that engine runs **natively** — no Rosetta, no
+prompt. On **Apple Silicon** it needs **Rosetta 2**, which is not preinstalled;
+`RosettaGate` detects this before any Wine subprocess is spawned and offers a guided
+install.
+
+Apple supports Rosetta 2 fully **through macOS 27** and **reduces it to a subset in
+macOS 28** (expected autumn 2027) — a cutback, not a clean removal. That is still a
+real risk to any x86_64 Wine runner, and **how OpenXE will handle it is undecided.**
+The mitigation in place is architectural, not wishful: the engine directory is
+**versioned and swappable**, so an arm64-native Wine build drops in behind the same
 `engine/current` symlink without touching the rest of the app. We do not pretend to
 have solved this — we designed so that solving it later is a drop-in, not a rewrite.
 
+Full detail, including what is verified and what is merely expected:
+[`docs/platform-support.md`](docs/platform-support.md).
+
+## Will it run on my Mac?
+
+| | |
+|---|---|
+| **macOS 14 (Sonoma) or newer** | Required. Macs that cannot update this far — commonly 2015–2017 models — **are not supported, and will not be.** |
+| **Apple Silicon** | Works. Needs **Rosetta 2**; OpenXE detects its absence and walks you through installing it (one admin password). |
+| **Intel** | Works, natively — Rosetta is never involved. macOS 26 (Tahoe) is the last macOS for Intel Macs. |
+| **First launch** | macOS **will block the app** — it is ad-hoc signed, not notarized. Approving it once is a documented, per-app step. |
+
+The five-second check is **Apple menu → About This Mac**. Full matrix and
+step-by-step: [`INSTALL.md`](INSTALL.md) · [`docs/platform-support.md`](docs/platform-support.md).
+
+> **Not tested on Intel hardware.** The project owns no Intel Mac. Intel support is a
+> reasoned expectation from a native x86_64 engine and a native x86_64 app slice — it
+> is not a tested claim. Reports welcome.
+
 ## Quickstart
 
-**Just want to run it?** See [`INSTALL.md`](INSTALL.md) — download the app, clear
-the Gatekeeper quarantine, and open it. The setup wizard takes it from there:
-one-time engine download (~1.7 GB), then NWS download and install, then launch.
+**Just want to run it?** See [`INSTALL.md`](INSTALL.md) — download the app, approve
+it once in **System Settings → Privacy & Security** (it is ad-hoc signed, so macOS
+blocks the first launch), and open it. On Apple Silicon it will offer to install
+Rosetta 2 if needed. The setup wizard takes it from there: one-time engine download
+(~1.7 GB), then NWS download and install, then launch.
 
 **Building from source:**
 

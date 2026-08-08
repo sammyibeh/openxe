@@ -29,6 +29,7 @@ public enum Subprocess {
         currentDirectory: URL? = nil,
         timeout: TimeInterval? = nil,
         logHandle: FileHandle? = nil,
+        onLine: (@Sendable (String) -> Void)? = nil,
         captureOutput: Bool = true
     ) throws -> SubprocessResult {
         let process = Process()
@@ -48,7 +49,7 @@ public enum Subprocess {
             let p = Pipe()
             process.standardOutput = p
             process.standardError = p
-            let b = OutputBuffer(logHandle: logHandle)
+            let b = OutputBuffer(logHandle: logHandle, onLine: onLine)
             p.fileHandleForReading.readabilityHandler = { handle in
                 let chunk = handle.availableData
                 if chunk.isEmpty { // EOF: all writers closed
@@ -86,6 +87,7 @@ public enum Subprocess {
         if let buffer, let pipe {
             _ = buffer.waitForEOF(timeout: 0.5)
             pipe.fileHandleForReading.readabilityHandler = nil
+            buffer.flushPending()
         }
 
         return SubprocessResult(status: process.terminationStatus, output: buffer?.string ?? "")
@@ -95,17 +97,43 @@ public enum Subprocess {
 /// Lock-guarded accumulator shared between the readability handler and the caller.
 private final class OutputBuffer: @unchecked Sendable {
     private var data = Data()
+    private var pending = Data()          // bytes since the last newline
     private let lock = NSLock()
     private let logHandle: FileHandle?
+    private let onLine: (@Sendable (String) -> Void)?
     private let eof = DispatchSemaphore(value: 0)
 
-    init(logHandle: FileHandle?) { self.logHandle = logHandle }
+    init(logHandle: FileHandle?, onLine: (@Sendable (String) -> Void)? = nil) {
+        self.logHandle = logHandle
+        self.onLine = onLine
+    }
 
     func append(_ chunk: Data) {
         lock.lock()
         data.append(chunk)
+        var emit: [String] = []
+        if onLine != nil {
+            pending.append(chunk)
+            while let nl = pending.firstIndex(of: 0x0A) {
+                let lineData = pending[pending.startIndex..<nl]
+                emit.append(String(decoding: lineData, as: UTF8.self))
+                pending = pending[pending.index(after: nl)...]
+            }
+        }
         lock.unlock()
         try? logHandle?.write(contentsOf: chunk)
+        for line in emit { onLine?(line) }
+    }
+
+    /// Flush any trailing bytes with no newline, so a final unterminated
+    /// line is not silently dropped.
+    func flushPending() {
+        lock.lock()
+        let rest = pending
+        pending = Data()
+        lock.unlock()
+        guard !rest.isEmpty else { return }
+        onLine?(String(decoding: rest, as: UTF8.self))
     }
 
     func markEOF() { eof.signal() }

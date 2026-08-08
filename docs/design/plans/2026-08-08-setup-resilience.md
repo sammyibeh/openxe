@@ -911,7 +911,7 @@ The stage the user actually complained about. After this task, stage 4 reports s
 - Consumes: `SetupLog` (Task 2)
 - Produces: `PrefixProgress` enum; `PrefixManager.ensurePrefix(log:progress:)`; `PrefixManager.fontWriteCount: Int`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```swift
 import XCTest
@@ -973,12 +973,12 @@ final class PrefixManagerTests: XCTestCase {
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `swift test --filter PrefixManagerTests`
 Expected: FAIL — `cannot find 'PrefixProgress' in scope`
 
-- [ ] **Step 3: Add `PrefixProgress` at the top of `PrefixManager.swift`**
+- [x] **Step 3: Add `PrefixProgress` at the top of `PrefixManager.swift`**
 
 Insert after the `import Foundation` line:
 
@@ -1045,7 +1045,7 @@ public enum PrefixProgress: Sendable {
 }
 ```
 
-- [ ] **Step 3b: Add `BootProgressPoller` at the bottom of `PrefixManager.swift`**
+- [x] **Step 3b: Add `BootProgressPoller` at the bottom of `PrefixManager.swift`**
 
 ```swift
 /// Polls the prefix's file count at 1 Hz to give sub-step 4a a coarse
@@ -1106,7 +1106,7 @@ final class BootProgressPoller: @unchecked Sendable {
 }
 ```
 
-- [ ] **Step 4: Thread the log and progress callback through `ensurePrefix`**
+- [x] **Step 4: Thread the log and progress callback through `ensurePrefix`**
 
 Add the static count and change the signature (currently `PrefixManager.swift:49`):
 
@@ -1183,7 +1183,7 @@ Change the `provisionFonts` call site (currently `:99`) to pass both through:
         provisionFonts(env: env, log: log, progress: progress)
 ```
 
-- [ ] **Step 5: Make the 57 font writes counted**
+- [x] **Step 5: Make the 57 font writes counted**
 
 Replace `provisionFonts` and `regBestEffort` (currently `:178-212`):
 
@@ -1234,7 +1234,7 @@ Replace `provisionFonts` and `regBestEffort` (currently `:178-212`):
 
 Also give `registryAdd` (currently `:214`) a `log:` parameter and pass `logHandle: log?.handle`, updating its three call sites in the Retina/DPI block.
 
-- [ ] **Step 6: Run tests and confirm every setup subprocess now logs**
+- [x] **Step 6: Run tests and confirm every setup subprocess now logs**
 
 Run: `swift test --filter PrefixManagerTests && swift build`
 Expected: PASS (5 tests), build succeeds
@@ -1242,7 +1242,7 @@ Expected: PASS (5 tests), build succeeds
 Run: `grep -n "Subprocess.run" Sources/OpenXECore/PrefixManager.swift`
 Expected: every call inside `ensurePrefix` passes `logHandle:`. `shutdownServer` may omit it (it runs outside setup).
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add Sources/OpenXECore/PrefixManager.swift Tests/OpenXECoreTests/PrefixManagerTests.swift

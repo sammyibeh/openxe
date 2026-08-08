@@ -1,5 +1,66 @@
 import Foundation
 
+/// Stage-4 sub-progress (spec §5.1). Weights are measured, not estimated:
+/// wineboot 24 s dominates; fonts are one batched import at ~1.5 s (spec §5.3).
+public enum PrefixProgress: Sendable {
+    public enum SubStep: String, Sendable, CaseIterable {
+        case boot, drain, verify, registry, fonts, linking, marker
+
+        public var weight: Int {
+            switch self {
+            case .boot:     return 82
+            case .drain:    return 3
+            case .verify:   return 2
+            case .registry: return 6
+            case .fonts:    return 5
+            case .linking:  return 1
+            case .marker:   return 1
+            }
+        }
+
+        public var detail: String {
+            switch self {
+            case .boot:     return "Setting up Windows for the first time…"
+            case .drain:    return "Finishing background setup…"
+            case .verify:   return "Checking .NET and browser support…"
+            case .registry: return "Configuring display settings…"
+            case .fonts:    return "Registering fonts…"
+            case .linking:  return "Linking your Documents and Downloads…"
+            case .marker:   return "Finishing up…"
+            }
+        }
+
+        /// Cumulative weight of every sub-step before this one.
+        var offset: Int {
+            var total = 0
+            for s in SubStep.allCases {
+                if s == self { break }
+                total += s.weight
+            }
+            return total
+        }
+    }
+
+    case step(SubStep, fraction: Double, detail: String)
+
+    /// Files a completed `wineboot --init` leaves in the prefix (measured,
+    /// spec §3.1). Denominator for 4a's coarse determinate bar.
+    public static let expectedPrefixEntries = 2027
+
+    /// 4a progress from prefix file count (spec §5.1, closes R3a). Advisory:
+    /// clamped to 1.0, and the caller keeps a running maximum so the bar can
+    /// never rewind. A wrong denominator yields a lazy bar, never a wrong one.
+    public static func bootFraction(filesSeen: Int) -> Double {
+        min(Double(filesSeen) / Double(expectedPrefixEntries), 1.0)
+    }
+
+    /// Overall 0...1 position within stage 4.
+    public static func fraction(at step: SubStep, within inner: Double) -> Double {
+        let clamped = min(max(inner, 0), 1)
+        return (Double(step.offset) + Double(step.weight) * clamped) / 100.0
+    }
+}
+
 public enum PrefixError: Error, LocalizedError {
     case bootFailed(status: Int32, detail: String)
     case monoOrGeckoMissing(String)
@@ -46,7 +107,11 @@ public final class PrefixManager: Sendable {
         return built == (engine.activeEngineID ?? "")
     }
 
-    public func ensurePrefix() throws {
+    /// 28 substitutions x 2 registry tables + 1 FontAwesome registration.
+    public static var fontWriteCount: Int { FontProvisioning.substitutions.count * 2 + 1 }
+
+    public func ensurePrefix(log: SetupLog? = nil,
+                             progress: (@Sendable (PrefixProgress) -> Void)? = nil) throws {
         guard !isReady else { return }
         let fm = FileManager.default
 
@@ -61,20 +126,46 @@ public final class PrefixManager: Sendable {
 
         // 1. Boot. Bundled shared Mono/Gecko auto-install here (spec §4.1);
         //    allow generous time for that one-time work.
+        progress?(.step(.boot, fraction: 0, detail: PrefixProgress.SubStep.boot.detail))
+        log?.note("wineboot --init starting")
+
+        // Coarse determinate bar for 4a from prefix file count (spec §5.1,
+        // closes R3a). Shares the 1 Hz cadence the liveness signal needs; the
+        // running maximum is what guarantees the bar never rewinds.
+        let bootProgress = BootProgressPoller(prefix: paths.prefix) { fraction in
+            progress?(.step(.boot, fraction: fraction,
+                            detail: PrefixProgress.SubStep.boot.detail))
+        }
+        bootProgress.start()
+        // The explicit stop below covers the success path; this defer covers a
+        // throw. stop() is idempotent. Deviation from the plan sketch, which
+        // relied on the defer alone and so left the poller emitting .boot
+        // events during sub-steps 4b-4g — visibly rewinding the bar.
+        defer { bootProgress.stop() }
         let boot = try Subprocess.run(engine.activeWineBinary,
                                       arguments: ["wineboot", "--init"],
-                                      environment: env, timeout: 900)
+                                      environment: env, timeout: 900,
+                                      logHandle: log?.handle,
+                                      onLine: { line in
+                                          // Every line is a sign of life; the
+                                          // coordinator's stall detector reads these.
+                                          progress?(.step(.boot, fraction: 0.5, detail: line))
+                                      })
+        bootProgress.stop()
         guard boot.status == 0 else {
             throw PrefixError.bootFailed(status: boot.status, detail: String(boot.output.suffix(400)))
         }
         // Wait for background services (mono/gecko installers) to finish.
+        progress?(.step(.drain, fraction: 0, detail: PrefixProgress.SubStep.drain.detail))
         _ = try? Subprocess.run(engine.activeWineserverBinary, arguments: ["-w"],
-                                environment: env, timeout: 900, captureOutput: false)
+                                environment: env, timeout: 900,
+                                logHandle: log?.handle, captureOutput: false)
 
         // 2. Verify Mono + Gecko — hard requirement; fail loudly, never degrade.
         //    The bundled builds install both as *shared* (used in place from the
         //    engine's share/wine/, registered into the prefix) — so Mono is
         //    verified via its registry registration, not drive_c/windows/mono.
+        progress?(.step(.verify, fraction: 0, detail: PrefixProgress.SubStep.verify.detail))
         let driveC = paths.prefix.appendingPathComponent("drive_c")
         let systemReg = (try? String(contentsOf: paths.prefix.appendingPathComponent("system.reg"),
                                      encoding: .utf8)) ?? ""
@@ -84,10 +175,11 @@ public final class PrefixManager: Sendable {
         try verifyNonEmptyDirectory(driveC.appendingPathComponent("windows/system32/gecko"), name: "Wine Gecko (embedded browser)")
 
         // 3. Retina rendering.
+        progress?(.step(.registry, fraction: 0, detail: PrefixProgress.SubStep.registry.detail))
         try registryAdd(key: #"HKCU\Software\Wine\Mac Driver"#, value: "RetinaMode",
-                        type: "REG_SZ", data: "y", env: env)
+                        type: "REG_SZ", data: "y", env: env, log: log)
         try registryAdd(key: #"HKCU\Control Panel\Desktop"#, value: "LogPixels",
-                        type: "REG_DWORD", data: "192", env: env)
+                        type: "REG_DWORD", data: "192", env: env, log: log)
 
         // 3a. Font provisioning (spec §4.2). Best-effort — font issues must never
         //     block a launch. Generalized from the NWS-specific fix into a base
@@ -96,7 +188,7 @@ public final class PrefixManager: Sendable {
         //     Windows font we cannot supply degrades to a close available face
         //     instead of NULL-derefing wine-mono's WPF text layout. See
         //     FontProvisioning for the base-fonts-from-macOS rationale.
-        provisionFonts(env: env)
+        provisionFonts(env: env, log: log, progress: progress)
 
         // 3b. Software rendering default (spec §4.2, §8). OpenXE ships no GPU
         //     stack (no MoltenVK/DXVK), so WPF's hardware render tier hits the
@@ -106,7 +198,8 @@ public final class PrefixManager: Sendable {
         //     a path that actually works here. The map/3D view degrades; the main
         //     UI renders. Best-effort; a per-app override can re-enable it later.
         regBestEffort([#"HKCU\Software\Microsoft\Avalon.Graphics"#,
-                       "/v", "DisableHWAcceleration", "/t", "REG_DWORD", "/d", "1", "/f"], env: env)
+                       "/v", "DisableHWAcceleration", "/t", "REG_DWORD", "/d", "1", "/f"],
+                      env: env, log: log)
 
         // 4. Link the Mac's real folders into the Windows user profile.
         //    Best-effort: folder linking must NEVER abort ensurePrefix, or the
@@ -116,6 +209,7 @@ public final class PrefixManager: Sendable {
         //    engine-dependent (CrossOver's wineboot creates `users/crossover`,
         //    Gcenx uses the unix user name), so link into whatever real profiles
         //    wineboot created rather than assuming `NSUserName()`.
+        progress?(.step(.linking, fraction: 0, detail: PrefixProgress.SubStep.linking.detail))
         let home = fm.homeDirectoryForCurrentUser
         let usersDir = driveC.appendingPathComponent("users")
         let profiles = ((try? fm.contentsOfDirectory(atPath: usersDir.path)) ?? [])
@@ -142,6 +236,7 @@ public final class PrefixManager: Sendable {
         }
 
         // 5. Ready marker records the creating engine id (the rebuild key).
+        progress?(.step(.marker, fraction: 0, detail: PrefixProgress.SubStep.marker.detail))
         let engineID = engine.activeEngineID ?? "unknown"
         try Data("engine=\(engineID)\n".utf8)
             .write(to: paths.prefix.appendingPathComponent(Self.readyMarker))
@@ -175,10 +270,19 @@ public final class PrefixManager: Sendable {
     /// lacks and register the broad fallback substitution table from
     /// `FontProvisioning`. Idempotent and best-effort: any failure is swallowed
     /// so it can never block prefix readiness.
-    private func provisionFonts(env: [String: String]) {
+    private func provisionFonts(env: [String: String], log: SetupLog?,
+                                progress: (@Sendable (PrefixProgress) -> Void)?) {
         let fm = FileManager.default
         let fontsDir = paths.prefix.appendingPathComponent("drive_c/windows/Fonts")
         try? fm.createDirectory(at: fontsDir, withIntermediateDirectories: true)
+
+        let total = Self.fontWriteCount
+        var done = 0
+        func tick() {
+            done += 1
+            progress?(.step(.fonts, fraction: Double(done) / Double(total),
+                            detail: "Registering fonts (\(done) of \(total))…"))
+        }
 
         // Install the bundled FontAwesome so family-name fallback resolves it
         // when wine-mono cannot load an app's embedded copy. Every other common
@@ -191,35 +295,101 @@ public final class PrefixManager: Sendable {
             if (try? fm.copyItem(at: src, to: dst)) != nil {
                 regBestEffort([#"HKLM\Software\Microsoft\Windows NT\CurrentVersion\Fonts"#,
                                "/v", "FontAwesome (TrueType)", "/t", "REG_SZ",
-                               "/d", FontProvisioning.bundledFontFileName, "/f"], env: env)
+                               "/d", FontProvisioning.bundledFontFileName, "/f"],
+                              env: env, log: log)
             }
         }
+        tick() // counted whether or not the bundled font was present
 
         // Broad fallback substitutions. Set both the GDI table (which wine-mono
         // reads for WPF) and wine's own Replacements table so a missing font
         // degrades to a close available face rather than crashing.
         for (from, to) in FontProvisioning.substitutions {
             regBestEffort([#"HKLM\Software\Microsoft\Windows NT\CurrentVersion\FontSubstitutes"#,
-                           "/v", from, "/t", "REG_SZ", "/d", to, "/f"], env: env)
+                           "/v", from, "/t", "REG_SZ", "/d", to, "/f"], env: env, log: log)
+            tick()
             regBestEffort([#"HKCU\Software\Wine\Fonts\Replacements"#,
-                           "/v", from, "/t", "REG_SZ", "/d", to, "/f"], env: env)
+                           "/v", from, "/t", "REG_SZ", "/d", to, "/f"], env: env, log: log)
+            tick()
         }
     }
 
-    private func regBestEffort(_ args: [String], env: [String: String]) {
+    private func regBestEffort(_ args: [String], env: [String: String], log: SetupLog?) {
         _ = try? Subprocess.run(engine.activeWineBinary, arguments: ["reg", "add"] + args,
-                                environment: env, timeout: 60, captureOutput: false)
+                                environment: env, timeout: 60,
+                                logHandle: log?.handle, captureOutput: false)
     }
 
     private func registryAdd(key: String, value: String, type: String, data: String,
-                             env: [String: String]) throws {
+                             env: [String: String], log: SetupLog?) throws {
         let result = try Subprocess.run(
             engine.activeWineBinary,
             arguments: ["reg", "add", key, "/v", value, "/t", type, "/d", data, "/f"],
-            environment: env, timeout: 120)
+            environment: env, timeout: 120, logHandle: log?.handle)
         guard result.status == 0 else {
             throw PrefixError.bootFailed(status: result.status,
                                          detail: "reg add \(key)\\\(value): \(result.output.suffix(200))")
         }
+    }
+}
+
+/// Polls the prefix's file count at 1 Hz to give sub-step 4a a coarse
+/// determinate bar (spec §5.1, closes R3a). `wineboot` reports no progress of
+/// its own, and after font batching 4a covers 82 % of stage 4 — this is the
+/// second, independent signal that keeps the stage from resting on liveness
+/// evidence alone.
+///
+/// Advisory by construction: the reported fraction is a running maximum, so a
+/// poll that transiently counts fewer entries cannot rewind the bar, and the
+/// count never gates completion — `wineboot` exiting does.
+final class BootProgressPoller: @unchecked Sendable {
+    private let prefix: URL
+    private let onProgress: (Double) -> Void
+    private var timer: DispatchSourceTimer?
+    private var highWater: Double = 0
+    private let lock = NSLock()
+    private let queue = DispatchQueue(label: "dev.openxe.boot-progress")
+
+    init(prefix: URL, onProgress: @escaping (Double) -> Void) {
+        self.prefix = prefix
+        self.onProgress = onProgress
+    }
+
+    func start() {
+        let t = DispatchSource.makeTimerSource(queue: queue)
+        t.schedule(deadline: .now() + 1, repeating: 1)
+        t.setEventHandler { [weak self] in self?.pollOnce() }
+        lock.lock(); timer = t; lock.unlock()
+        t.resume()
+    }
+
+    /// Idempotent — the boot path calls this on success and again from a defer
+    /// that covers the throw path.
+    func stop() {
+        lock.lock(); let t = timer; timer = nil; lock.unlock()
+        t?.cancel()
+    }
+
+    /// One poll. Internal rather than private so the monotonicity guarantee is
+    /// testable without waiting on a 1 Hz timer.
+    func pollOnce() {
+        let count = Self.entryCount(at: prefix)
+        let fraction = PrefixProgress.bootFraction(filesSeen: count)
+        lock.lock()
+        guard fraction > highWater else { lock.unlock(); return }
+        highWater = fraction
+        lock.unlock()
+        onProgress(fraction)
+    }
+
+    /// ~10 ms on a 2,027-entry prefix (measured), i.e. ~1 % of one core at
+    /// 1 Hz. Cheap enough not to warrant a smarter mechanism.
+    static func entryCount(at url: URL) -> Int {
+        guard let e = FileManager.default.enumerator(
+            at: url, includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]) else { return 0 }
+        var n = 0
+        for case _ as URL in e { n += 1 }
+        return n
     }
 }

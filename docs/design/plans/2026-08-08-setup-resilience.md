@@ -744,7 +744,7 @@ Gives every setup subprocess a log destination and a live line callback — the 
 - Consumes: nothing new
 - Produces: `Subprocess.run(..., onLine: (@Sendable (String) -> Void)? = nil)` — existing call sites unaffected because every new parameter is defaulted.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```swift
 import XCTest
@@ -790,12 +790,12 @@ final class SubprocessStreamingTests: XCTestCase {
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `swift test --filter SubprocessStreamingTests`
 Expected: FAIL — `extra argument 'onLine' in call`
 
-- [ ] **Step 3: Add the parameter and line assembly**
+- [x] **Step 3: Add the parameter and line assembly**
 
 In `Subprocess.swift`, add to the `run` signature after `logHandle`:
 
@@ -877,17 +877,17 @@ Finally, call `flushPending()` in the drain block (currently lines 86-89), just 
         }
 ```
 
-- [ ] **Step 4: Run tests**
+- [x] **Step 4: Run tests**
 
 Run: `swift test --filter SubprocessStreamingTests`
 Expected: PASS (3 tests)
 
-- [ ] **Step 5: Verify existing callers still compile and pass**
+- [x] **Step 5: Verify existing callers still compile and pass**
 
 Run: `swift build && swift test`
 Expected: build succeeds; full suite passes (all new params are defaulted)
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add Sources/OpenXECore/Subprocess.swift Tests/OpenXECoreTests/SubprocessStreamingTests.swift

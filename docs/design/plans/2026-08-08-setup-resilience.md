@@ -234,7 +234,7 @@ The single highest-value gap: today stages 1–10 write nothing anywhere (spec �
 - Consumes: `OpenXEPaths.setupLog` (Task 1)
 - Produces: `SetupLog(url:)`, `.beginRun(buildID:engineID:freeBytes:)`, `.beginStage(_:attempt:)`, `.endStage(_:elapsed:)`, `.note(_:)`, `.write(_ data: Data)`, `.handle: FileHandle?`, `.tail(lines:) -> String`, `.rotateIfNeeded()`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```swift
 import XCTest
@@ -309,12 +309,12 @@ final class SetupLogTests: XCTestCase {
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `swift test --filter SetupLogTests`
 Expected: FAIL — `cannot find 'SetupLog' in scope`
 
-- [ ] **Step 3: Implement `SetupLog.swift`**
+- [x] **Step 3: Implement `SetupLog.swift`**
 
 ```swift
 import Foundation
@@ -406,12 +406,12 @@ public final class SetupLog: @unchecked Sendable {
 
 > **Note:** this file references `SetupStage.ID`, defined in Task 3. Implement Task 3 first if the compiler objects, or temporarily type the parameter as `String` — but prefer doing Task 3 first and keeping this signature.
 
-- [ ] **Step 4: Run tests**
+- [x] **Step 4: Run tests**
 
 Run: `swift test --filter SetupLogTests`
 Expected: PASS (4 tests)
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add Sources/OpenXECore/SetupLog.swift Tests/OpenXECoreTests/SetupLogTests.swift

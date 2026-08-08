@@ -19,6 +19,8 @@
 - **`WINEDEBUG` in `WineEnvironment.build` (`Paths.swift:69`) must not change.** Verified by spike (§3.1): `+loaddll` gives no benefit over the untouched value once filesystem polling is present, and changing it would affect every app launch.
 - **Canonical size copy:** "a one-time download of about 177 MB, which expands to about 700 MB on your Mac." Never "1.7 GB", never "~200 MB", never "~1 GB".
 - **Stage weights (§4.2), sum exactly 100:** preflight 1, downloadEngine 37, unpackEngine 25, preparePrefix 12, downloadNWS 10, installNWS 15. **These assume batched fonts (Task 6).** If Task 6 is reverted, stage 4 returns to ~59 s and the weights must be recomputed.
+- **Weights are data, never inline literals.** They live in `StageWeightTable` and are overridable via the `OpenXEStageWeights` user default, because cold calibration is deferred and they will need correcting without a rebuild (§4.2). The same rule covers `expectedArchiveEntries`, `expectedPrefixEntries`, the stall threshold, and `overshootFactor` — each a named constant in one place.
+- **All timing figures come from a warm Apple Silicon Mac.** The ETA will read optimistic on slower hardware; §7.3 Rule B is what keeps that from becoming a confidently wrong countdown.
 - **Stage-4 sub-step weights (§5.1), sum exactly 100:** 4a boot 82, 4b drain 3, 4c verify 2, 4d registry 6, 4e fonts 5, 4f linking 1, 4g marker 1.
 - **The journal is advisory; the filesystem is authoritative** (§6.2). Every resume decision starts from a ground-truth predicate.
 - **Tests:** XCTest, `@testable import OpenXECore`, fixtures in `FileManager.default.temporaryDirectory` with `defer` cleanup. Never touch `~/Library/Application Support/OpenXE`.
@@ -445,6 +447,43 @@ final class SetupStageTests: XCTestCase {
         XCTAssertEqual(SetupCatalog.all.reduce(0) { $0 + $1.weight }, 100)
     }
 
+    /// Spec §4.2: weights are data. Cold calibration is deferred, so they must
+    /// be correctable with `defaults write` and no rebuild.
+    func testValidOverrideIsAccepted() {
+        let override = ["preflight": 2, "downloadEngine": 30, "unpackEngine": 30,
+                        "preparePrefix": 20, "downloadNWS": 8, "installNWS": 10]
+        let weights = StageWeightTable.resolve(override: override)
+        XCTAssertEqual(weights[.downloadEngine], 30)
+        XCTAssertEqual(weights.values.reduce(0, +), 100)
+    }
+
+    /// A bad override must degrade to the shipped defaults, never a broken bar.
+    func testInvalidOverridesAreRejected() {
+        let defaults = StageWeightTable.builtIn
+        // Does not sum to 100.
+        XCTAssertEqual(StageWeightTable.resolve(override: ["preflight": 1]), defaults)
+        // Sums to 100 but omits stages.
+        XCTAssertEqual(StageWeightTable.resolve(
+            override: ["preflight": 50, "downloadEngine": 50]), defaults)
+        // Negative value.
+        XCTAssertEqual(StageWeightTable.resolve(
+            override: ["preflight": -1, "downloadEngine": 38, "unpackEngine": 25,
+                       "preparePrefix": 12, "downloadNWS": 10, "installNWS": 16]), defaults)
+        // Unknown stage id.
+        XCTAssertEqual(StageWeightTable.resolve(
+            override: ["preflight": 1, "downloadEngine": 37, "unpackEngine": 25,
+                       "preparePrefix": 12, "downloadNWS": 10, "installNWS": 14,
+                       "bogusStage": 1]), defaults)
+        // No override at all.
+        XCTAssertEqual(StageWeightTable.resolve(override: nil), defaults)
+    }
+
+    /// Whatever the source, the bar is meaningless unless the weights sum to 100.
+    func testResolvedWeightsAlwaysSumTo100() {
+        XCTAssertEqual(StageWeightTable.builtIn.values.reduce(0, +), 100)
+        XCTAssertEqual(StageWeightTable.resolveFromDefaults().values.reduce(0, +), 100)
+    }
+
     func testStageOrderAndWeightsMatchSpec() {
         XCTAssertEqual(SetupCatalog.all.map(\.id),
                        [.preflight, .downloadEngine, .unpackEngine,
@@ -538,24 +577,74 @@ public struct SetupStage: Sendable, Equatable {
     public let hardCeiling: TimeInterval
 }
 
-/// The six stages, their weights, and their policies. Weights are the stage's
-/// share of a 241 s reference run (spec §3.1, §3.2, §4.2) and MUST sum to 100.
-/// They assume batched font provisioning (spec §5.3).
+/// Stage weights as DATA, not logic (spec §4.2). Cold-machine calibration is
+/// deferred, so these will need correcting later on evidence we do not yet
+/// have — via `defaults write dev.openxe.OpenXE OpenXEStageWeights`, with no
+/// rebuild. An ad-hoc-signed bundle cannot have a bundled resource edited
+/// without invalidating its signature, which is why the override lives in
+/// UserDefaults rather than a plist in Resources.
+public enum StageWeightTable {
+
+    /// Share of a 241 s reference run (spec §3.1, §3.2). Assumes batched font
+    /// provisioning (spec §5.3). MUST sum to 100.
+    public static let builtIn: [SetupStage.ID: Int] = [
+        .preflight: 1, .downloadEngine: 37, .unpackEngine: 25,
+        .preparePrefix: 12, .downloadNWS: 10, .installNWS: 15,
+    ]
+
+    public static let defaultsKey = "OpenXEStageWeights"
+
+    /// Resolution order: validated UserDefaults override, then built-in.
+    /// An override is accepted only if it names every stage exactly once, all
+    /// values are positive, and they sum to 100. Anything else is ignored and
+    /// logged, so a bad edit degrades to the shipped defaults.
+    public static func resolve(override: [String: Int]?) -> [SetupStage.ID: Int] {
+        guard let override else { return builtIn }
+        var parsed: [SetupStage.ID: Int] = [:]
+        for (key, value) in override {
+            guard let id = SetupStage.ID(rawValue: key), value > 0 else { return builtIn }
+            guard parsed[id] == nil else { return builtIn }
+            parsed[id] = value
+        }
+        guard parsed.count == SetupStage.ID.allCases.count,
+              parsed.values.reduce(0, +) == 100 else { return builtIn }
+        return parsed
+    }
+
+    public static func resolveFromDefaults() -> [SetupStage.ID: Int] {
+        let raw = UserDefaults.standard.dictionary(forKey: defaultsKey) as? [String: Int]
+        let resolved = resolve(override: raw)
+        if raw != nil, resolved == builtIn {
+            NSLog("OpenXE: ignoring invalid %@ override; using built-in weights", defaultsKey)
+        }
+        return resolved
+    }
+}
+
+/// The six stages, their weights, and their policies.
 public enum SetupCatalog {
+
+    private static let weights = StageWeightTable.resolveFromDefaults()
 
     public static let all: [SetupStage] = [
         SetupStage(id: .preflight, displayName: "Checking your Mac",
-                   weight: 1, resumable: false, retry: .none, hardCeiling: 15),
+                   weight: weights[.preflight]!, resumable: false,
+                   retry: .none, hardCeiling: 15),
         SetupStage(id: .downloadEngine, displayName: "Downloading the Windows environment",
-                   weight: 37, resumable: true, retry: .network, hardCeiling: 60),
+                   weight: weights[.downloadEngine]!, resumable: true,
+                   retry: .network, hardCeiling: 60),
         SetupStage(id: .unpackEngine, displayName: "Unpacking the Windows environment",
-                   weight: 25, resumable: false, retry: .none, hardCeiling: 900),
+                   weight: weights[.unpackEngine]!, resumable: false,
+                   retry: .none, hardCeiling: 900),
         SetupStage(id: .preparePrefix, displayName: "Preparing the Windows environment",
-                   weight: 12, resumable: false, retry: .none, hardCeiling: 900),
+                   weight: weights[.preparePrefix]!, resumable: false,
+                   retry: .none, hardCeiling: 900),
         SetupStage(id: .downloadNWS, displayName: "Downloading New World Scheduler",
-                   weight: 10, resumable: true, retry: .network, hardCeiling: 600),
+                   weight: weights[.downloadNWS]!, resumable: true,
+                   retry: .network, hardCeiling: 600),
         SetupStage(id: .installNWS, displayName: "Installing New World Scheduler",
-                   weight: 15, resumable: false, retry: .none, hardCeiling: 1200),
+                   weight: weights[.installNWS]!, resumable: false,
+                   retry: .none, hardCeiling: 1200),
     ]
 
     /// The `.exe` launch path needs setup only through the prefix (spec §7.4).
@@ -863,6 +952,15 @@ final class PrefixManagerTests: XCTestCase {
         XCTAssertEqual(PrefixProgress.fraction(at: .marker, within: 1.0), 1.0, accuracy: 0.001)
     }
 
+    /// Spec §5.1 / R3a: 4a's determinate bar is advisory and must never rewind.
+    func testBootFractionIsClampedAndMonotonic() {
+        XCTAssertEqual(PrefixProgress.bootFraction(filesSeen: 0), 0, accuracy: 0.001)
+        XCTAssertEqual(PrefixProgress.bootFraction(filesSeen: 2027), 1.0, accuracy: 0.001)
+        // A denominator that is too low must saturate, not exceed 1.
+        XCTAssertEqual(PrefixProgress.bootFraction(filesSeen: 99_999), 1.0, accuracy: 0.001)
+        XCTAssertEqual(PrefixProgress.bootFraction(filesSeen: 1013), 0.5, accuracy: 0.01)
+    }
+
     func testFontFractionInterpolatesWithinTheSubStep() {
         let start = PrefixProgress.fraction(at: .fonts, within: 0)
         let mid = PrefixProgress.fraction(at: .fonts, within: 0.5)
@@ -928,10 +1026,82 @@ public enum PrefixProgress: Sendable {
 
     case step(SubStep, fraction: Double, detail: String)
 
+    /// Files a completed `wineboot --init` leaves in the prefix (measured,
+    /// spec §3.1). Denominator for 4a's coarse determinate bar.
+    public static let expectedPrefixEntries = 2027
+
+    /// 4a progress from prefix file count (spec §5.1, closes R3a). Advisory:
+    /// clamped to 1.0, and the caller keeps a running maximum so the bar can
+    /// never rewind. A wrong denominator yields a lazy bar, never a wrong one.
+    public static func bootFraction(filesSeen: Int) -> Double {
+        min(Double(filesSeen) / Double(expectedPrefixEntries), 1.0)
+    }
+
     /// Overall 0...1 position within stage 4.
     public static func fraction(at step: SubStep, within inner: Double) -> Double {
         let clamped = min(max(inner, 0), 1)
         return (Double(step.offset) + Double(step.weight) * clamped) / 100.0
+    }
+}
+```
+
+- [ ] **Step 3b: Add `BootProgressPoller` at the bottom of `PrefixManager.swift`**
+
+```swift
+/// Polls the prefix's file count at 1 Hz to give sub-step 4a a coarse
+/// determinate bar (spec §5.1, closes R3a). `wineboot` reports no progress of
+/// its own, and after font batching 4a covers 82 % of stage 4 — this is the
+/// second, independent signal that keeps the stage from resting on liveness
+/// evidence alone.
+///
+/// Advisory by construction: the reported fraction is a running maximum, so a
+/// poll that transiently counts fewer entries cannot rewind the bar, and the
+/// count never gates completion — `wineboot` exiting does.
+final class BootProgressPoller: @unchecked Sendable {
+    private let prefix: URL
+    private let onProgress: (Double) -> Void
+    private var timer: DispatchSourceTimer?
+    private var highWater: Double = 0
+    private let lock = NSLock()
+    private let queue = DispatchQueue(label: "dev.openxe.boot-progress")
+
+    init(prefix: URL, onProgress: @escaping (Double) -> Void) {
+        self.prefix = prefix
+        self.onProgress = onProgress
+    }
+
+    func start() {
+        let t = DispatchSource.makeTimerSource(queue: queue)
+        t.schedule(deadline: .now() + 1, repeating: 1)
+        t.setEventHandler { [weak self] in self?.tick() }
+        lock.lock(); timer = t; lock.unlock()
+        t.resume()
+    }
+
+    func stop() {
+        lock.lock(); let t = timer; timer = nil; lock.unlock()
+        t?.cancel()
+    }
+
+    private func tick() {
+        let count = Self.entryCount(at: prefix)
+        let fraction = PrefixProgress.bootFraction(filesSeen: count)
+        lock.lock()
+        guard fraction > highWater else { lock.unlock(); return }
+        highWater = fraction
+        lock.unlock()
+        onProgress(fraction)
+    }
+
+    /// ~10 ms on a 2,027-entry prefix (measured), i.e. ~1 % of one core at
+    /// 1 Hz. Cheap enough not to warrant a smarter mechanism.
+    static func entryCount(at url: URL) -> Int {
+        guard let e = FileManager.default.enumerator(
+            at: url, includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]) else { return 0 }
+        var n = 0
+        for case _ as URL in e { n += 1 }
+        return n
     }
 }
 ```
@@ -954,6 +1124,16 @@ Then report each sub-step. Replace the boot block (currently `:62-72`):
         // 1. Boot. Bundled shared Mono/Gecko auto-install here (spec §4.1).
         progress?(.step(.boot, fraction: 0, detail: PrefixProgress.SubStep.boot.detail))
         log?.note("wineboot --init starting")
+
+        // Coarse determinate bar for 4a from prefix file count (spec §5.1,
+        // closes R3a). Shares the 1 Hz cadence the liveness signal needs; the
+        // running maximum is what guarantees the bar never rewinds.
+        let bootProgress = BootProgressPoller(prefix: paths.prefix) { fraction in
+            progress?(.step(.boot, fraction: fraction,
+                            detail: PrefixProgress.SubStep.boot.detail))
+        }
+        bootProgress.start()
+        defer { bootProgress.stop() }
         let boot = try Subprocess.run(engine.activeWineBinary,
                                       arguments: ["wineboot", "--init"],
                                       environment: env, timeout: 900,
@@ -1173,8 +1353,15 @@ Append inside the enum, after the `substitutions` table:
     ///
     /// The per-write path is retained as a fallback. If the import ever proves
     /// unreliable on a machine we cannot inspect, flip this to false to restore
-    /// the proven behaviour with no code revert. Remove the flag only once the
-    /// batched path has survived real use.
+    /// the proven behaviour with no code revert.
+    ///
+    /// REMOVAL CONDITION (spec §5.3) — this flag is not permanent. Delete it
+    /// and `provisionFontsPerWrite` in one commit once BOTH have happened:
+    ///   (a) one cold-machine run (spec §13.4) with the batched path, and
+    ///   (b) one real end-to-end install with the batched path.
+    /// `scripts/verify-font-batching.sh` stays afterwards as the regression
+    /// guard. A fallback that is never exercised is not a safety net — it is a
+    /// second code path that rots.
     public static let useBatchedImport = true
 
     /// The `.reg` file body, generated from `substitutions` so that table stays
@@ -1443,9 +1630,11 @@ Eliminates the one unrecoverable state in the current code (§10.1) and gives st
         XCTAssertFalse(mgr.isInstalled("test-engine"))
     }
 
-    func testExpectedArchiveEntriesIsPlausible() {
-        // Measured installed tree is 5,324 entries; the archive is larger.
-        XCTAssertGreaterThan(EngineManager.expectedArchiveEntries, 5_000)
+    /// Measured via `tar -tf` in Step 4, not estimated. The installed tree is
+    /// 5,324 entries and is a strict subset of the archive.
+    func testExpectedArchiveEntriesWasMeasured() {
+        XCTAssertGreaterThan(EngineManager.expectedArchiveEntries, 5_324,
+                             "must be the measured archive count, not the installed-tree count")
     }
 ```
 
@@ -1511,17 +1700,33 @@ And add the helper beside `stripQuarantine`:
     }
 ```
 
-- [ ] **Step 4: Add unpack counting**
+- [ ] **Step 4: Measure `expectedArchiveEntries` — do not estimate it**
+
+The pinned archive is listed without extracting. This is a one-time developer action; re-run it only if the engine is repinned.
+
+```bash
+cd "$(mktemp -d)"
+curl -L -o engine.tar.xz \
+  "https://github.com/Gcenx/macOS_Wine_builds/releases/download/11.0_1/wine-stable-11.0_1-osx64.tar.xz"
+shasum -a 256 engine.tar.xz   # must be b50dc50ec7f41d58b115a6b685d4d1315ba3c797bd3aa0f49213f2703cb82388
+tar -tf engine.tar.xz | wc -l
+```
+
+Expected: the checksum matches `EngineCatalog.stock.sha256`, and the count is a number above 5,324 (the installed tree is a strict subset). Put that number into `expectedArchiveEntries`, replacing the `0` placeholder, and update the test below to assert it.
+
+If the checksum does **not** match, stop — the pinned asset has been replaced upstream and that is a separate problem (spec §4.1 notes the pin exists to catch exactly this).
+
+- [ ] **Step 5: Add unpack counting**
 
 Add the constant near `findWineRoot`:
 
 ```swift
-    /// Entries `tar -xvf` emits for the pinned engine archive. The installed
-    /// tree measures 5,324; the archive is larger because the discarded outer
-    /// `.app` wrapper is extracted too. MUST be re-measured against real
-    /// `tar -xvf` output — see spec §5.2. Progress clamps, so an inexact value
-    /// is cosmetic, not harmful.
-    public static let expectedArchiveEntries = 5_600
+    /// Entries the pinned engine archive contains. MEASURED via `tar -tf`
+    /// (spec §5.2) — not the installed tree's 5,324, which excludes the outer
+    /// `.app` wrapper `findWineRoot` discards and includes two files written
+    /// after extraction. Re-derive only if the engine is repinned; see
+    /// Step 4 for the exact command. Progress clamps as a safety net.
+    public static let expectedArchiveEntries = 0   // <- replace in Step 4
 ```
 
 Change the `tar` invocation (currently `:300-303`) to stream and count:
@@ -1558,12 +1763,12 @@ final class EntryCounter: @unchecked Sendable {
 
 Widen `extractAndInstall` and `install` to carry `log: SetupLog?` and `onEntry: (@Sendable (Int) -> Void)?`, both defaulted to `nil` so existing callers and tests compile unchanged.
 
-- [ ] **Step 5: Run tests**
+- [ ] **Step 6: Run tests**
 
 Run: `swift test --filter EngineManagerTests && swift build`
-Expected: PASS, build succeeds
+Expected: PASS, build succeeds. `testExpectedArchiveEntriesIsPlausible` now asserts the measured value, not a guess.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
 git add Sources/OpenXECore/EngineManager.swift Tests/OpenXECoreTests/EngineManagerTests.swift
@@ -2853,6 +3058,28 @@ final class SetupCoordinatorTests: XCTestCase {
         XCTAssertEqual(j.stages[.installNWS]?.state, .completed)
     }
 
+    /// Spec §7.3 Rule B: an estimate already proven wrong is withdrawn, not
+    /// counted down. This is what makes the warm-machine defaults shippable.
+    func testEstimateIsWithdrawnWhenTheStageOvershoots() async throws {
+        let paths = makePaths()
+        defer { try? FileManager.default.removeItem(at: paths.root) }
+        let runner = FakeStageRunner()
+        // Stage 1 completes fast, seeding recalibration; stage 2 then runs far
+        // longer than its weight predicts.
+        runner.behaviours[.downloadEngine] = { Thread.sleep(forTimeInterval: 1.2) }
+        let c = SetupCoordinator(paths: paths, stages: Array(SetupCatalog.all.prefix(2)),
+                                 runner: runner)
+        async let collected = drain(c)
+        await c.run()
+        let events = await collected
+
+        let estimates: [TimeInterval?] = events.compactMap {
+            if case .overall(_, _, let r) = $0 { return r } else { return nil }
+        }
+        XCTAssertTrue(estimates.contains { $0 == nil },
+                      "an overshooting stage must withdraw the numeric estimate")
+    }
+
     func testCancelStopsTheRunAndMarksTheJournal() async throws {
         let paths = makePaths()
         defer { try? FileManager.default.removeItem(at: paths.root) }
@@ -2914,6 +3141,8 @@ public final class SetupCoordinator: @unchecked Sendable {
     public let events: AsyncStream<SetupEvent>
 
     private var startTime = Date()
+    private var currentStageIndex: Int?
+    private var currentStageStart = Date()
     private var completedWeight = 0
     private var secondsPerWeightUnit: Double = 241.0 / 100.0   // spec §7.3
     private var observedSeconds: Double = 0
@@ -2973,6 +3202,8 @@ public final class SetupCoordinator: @unchecked Sendable {
 
             emit(.stageBegan(stage.id, index: index + 1, of: stages.count))
             let stageStart = Date()
+            currentStageIndex = index
+            currentStageStart = stageStart
 
             do {
                 try await execute(stage, index: index)
@@ -2999,6 +3230,7 @@ public final class SetupCoordinator: @unchecked Sendable {
             log?.endStage(stage.id, elapsed: elapsed)
 
             completedWeight += weights[index]
+            currentStageIndex = nil
             recalibrate(weight: weights[index], elapsed: elapsed)
             emit(.stageCompleted(stage.id, elapsed: elapsed))
             emitOverall()
@@ -3065,13 +3297,32 @@ public final class SetupCoordinator: @unchecked Sendable {
         emit(.overall(fraction: fraction, elapsed: elapsed, remaining: remaining(done: done)))
     }
 
-    /// Spec §7.3: no estimate until a stage has completed or enough data
-    /// exists. An early estimate computed from nothing is worse than none.
+    /// Spec §7.3. Two suppression rules, both returning nil rather than a
+    /// number we cannot stand behind.
+    ///
+    /// Rule A — no estimate before any data exists. An early estimate computed
+    /// from nothing is worse than none.
+    ///
+    /// Rule B — no estimate once the in-flight stage has overshot its
+    /// expectation by 1.5x. Every reference figure came from a warm Apple
+    /// Silicon Mac, so on slower hardware the initial estimate reads
+    /// optimistic; Rule B withdraws it instead of counting down to a number
+    /// this machine cannot meet. This is what makes the warm defaults safe to
+    /// ship without cold calibration.
     private func remaining(done: Double) -> TimeInterval? {
-        guard observedWeight > 0 else { return nil }
+        guard observedWeight > 0 else { return nil }              // Rule A
+        if let stageIndex = currentStageIndex {
+            let expected = Double(weights[stageIndex]) * secondsPerWeightUnit
+            let elapsed = Date().timeIntervalSince(currentStageStart)
+            if expected > 0, elapsed > expected * Self.overshootFactor { return nil }  // Rule B
+        }
         let left = max(0, 100.0 - done)
         return left * secondsPerWeightUnit
     }
+
+    /// How far a stage may exceed its expected duration before the estimate is
+    /// withdrawn. Named, not inline — it is a calibration output (spec §13.4).
+    static let overshootFactor = 1.5
 
     private func recalibrate(weight: Int, elapsed: TimeInterval) {
         guard weight > 0 else { return }
@@ -3462,7 +3713,7 @@ public final class ProductionStageRunner: StageRunner, @unchecked Sendable {
 }
 ```
 
-> **Decision flagged (see "Decisions needed"):** `ensureDefaultActive` currently performs download *and* unpack in one call, so stages 2 and 3 cannot report separately without splitting that method. The plan keeps them merged for now — stage 3 reports the unpack phase through stage 2's progress callback. Splitting `EngineManager.install` into `fetchArchive` / `installArchive` is the clean fix and is worth doing if the user wants true stage-3 granularity.
+> **Settled (decision 1).** `ensureDefaultActive` performs download *and* unpack in one call, so stages 2 and 3 do not report separately. They stay merged: splitting `EngineManager.install` into `fetchArchive` / `installArchive` would buy separate reporting for a ~2 s verify step while touching proven download and checksum code. Stage 3 reports the unpack phase through stage 2's progress callback, and the unpack file counter (Task 7) still gives it a determinate bar of its own.
 
 - [ ] **Step 4: Run tests**
 
@@ -3669,12 +3920,15 @@ final class SetupPanelView: NSStackView {
 
     /// Coarse on purpose (spec §7.3): a second-by-second countdown invites the
     /// user to watch it and distrust it.
+    /// Spec §7.3. A withdrawn estimate (nil) is not silence — it says the run
+    /// is still working, so the user does not read the missing number as a
+    /// stall. The stall watchdog owns the "something is wrong" message.
     static func timing(elapsed: TimeInterval, remaining: TimeInterval?) -> String {
-        var text = "\(phrase(elapsed)) elapsed"
-        if let remaining, remaining > 1 {
-            text += " · about \(phrase(remaining)) remaining"
+        let base = "\(phrase(elapsed)) elapsed"
+        guard let remaining, remaining > 1 else {
+            return base + " · still working — this can take longer on some Macs"
         }
-        return text
+        return base + " · about \(phrase(remaining)) remaining"
     }
 
     static func phrase(_ seconds: TimeInterval) -> String {
@@ -3899,7 +4153,36 @@ import OpenXECore
 @MainActor
 enum SetupNotifier {
 
-    static func requestAuthorizationIfNeeded() {
+    private static var didRequestAuthorization = false
+
+    /// Spec §9.4. Requested at most once per install, and only once the run has
+    /// given a concrete reason to want it:
+    ///
+    ///   1. a stall (primary) — the user has waited >=60s, which is exactly
+    ///      when a background notification becomes useful, and is a calm
+    ///      moment rather than a bad one;
+    ///   2. a failure while OpenXE is NOT frontmost (secondary).
+    ///
+    /// The frontmost condition matters: stacking a permission dialog on an
+    /// error the user is already reading is the worst available timing. If
+    /// OpenXE is in front they can see the failure and need no notification,
+    /// so nothing is asked. In most bad runs the stall fires first anyway and
+    /// authorization is settled before any error appears.
+    ///
+    /// Never at launch, never at stage start, never during normal progress —
+    /// a clean install asks for nothing.
+    static func requestAuthorizationOnStall() {
+        requestOnce()
+    }
+
+    static func requestAuthorizationOnFailure() {
+        guard !NSApp.isActive else { return }
+        requestOnce()
+    }
+
+    private static func requestOnce() {
+        guard !didRequestAuthorization else { return }
+        didRequestAuthorization = true
         UNUserNotificationCenter.current()
             .requestAuthorization(options: [.alert, .sound]) { _, _ in }
     }
@@ -3939,12 +4222,30 @@ enum SetupNotifier {
 }
 ```
 
-- [ ] **Step 3: Build and run the full suite**
+- [ ] **Step 3: Wire the triggers into the event stream**
+
+In whichever renderer is pumping `coordinator.events` (wizard and launch path both), add to the event switch:
+
+```swift
+case .stalled:
+    SetupNotifier.requestAuthorizationOnStall()   // primary trigger, spec §9.4
+case .failed(let failure):
+    SetupNotifier.requestAuthorizationOnFailure() // secondary; no-op if frontmost
+    SetupNotifier.notifyFailure(failure)
+case .finished:
+    SetupNotifier.notifySuccess()
+```
+
+Authorization is never requested anywhere else — not at launch, not at stage start.
+
+- [ ] **Step 4: Build and run the full suite**
 
 Run: `swift build && swift test`
 Expected: all green
 
-- [ ] **Step 4: Commit**
+Manual: run `make fresh`, start setup, and confirm **no notification permission dialog appears** during a clean run.
+
+- [ ] **Step 5: Commit**
 
 ```bash
 git add Sources/OpenXE/SetupNotifier.swift Sources/OpenXE/ProgressWindow.swift \
@@ -3982,24 +4283,35 @@ git commit -m "docs: add setup-resilience smoke matrix"
 
 ## Self-Review
 
-**Spec coverage.** Walked §3–§14: §3 copy → Task 1; §4.1–4.2 → Task 3; §4.3 → Task 9; §4.4 → Task 2; §5.1 → Task 5; §5.2 + §10.1 → Task 7; **§5.3 → Task 6**; §6 → Tasks 8, 14, 15; §7.1–7.3 → Task 16; §7.4 → Task 18; §8.1–8.2 → Task 17; §8.3 → Task 14; §8.4 → Tasks 12, 17; §9.1–9.2 → Tasks 3, 14; §9.3 → Task 16; §9.4 → Task 18; §9.5 → Task 10; §10.2 → Task 13; §13 → Tasks 15, 19; §13.4 calibration → open decision 2. No gaps found.
+**Spec coverage.** Walked §3–§14: §3 copy → Task 1; §4.1–4.2 → Task 3; §4.3 → Task 9; §4.4 → Task 2; §5.1 → Task 5; §5.2 + §10.1 → Task 7; **§5.3 → Task 6**; §6 → Tasks 8, 14, 15; §7.1–7.3 → Task 16; §7.4 → Task 18; §8.1–8.2 → Task 17; §8.3 → Task 14; §8.4 → Tasks 12, 17; §9.1–9.2 → Tasks 3, 14; §9.3 → Task 16; §9.4 → Task 18; §9.5 → Task 10; §10.2 → Task 13; §13 → Tasks 15, 19; §13.4 calibration → deferred by decision, procedure retained in the spec. No gaps found.
 
 **Placeholder scan.** Task 17 Step 4 and Task 18 Step 1 describe rewiring in prose rather than full code, because both are mechanical replacements of existing `Task { }` blocks whose surrounding code the implementer will have open; the interfaces they consume are fully specified in Tasks 14–16. Every other step carries real code. No TBDs.
 
 **Type consistency.** Checked `SetupStage.ID` raw values, `PrefixProgress.fraction(at:within:)`, `SetupCatalog.renormalisedWeights(for:)`, `SetupLog.handle`, `ChildRegistry.terminateAll()`, `StageRunner.isAlreadySatisfied(_:journal:)` and `run(_:journal:progress:)` across all consumers — consistent. `SetupCoordinator.wrap` is `static` and tested directly in Task 15.
 
-**One knowing deviation:** Task 7's `expectedArchiveEntries = 5_600` is an estimate the spec itself flags for re-measurement (§5.2). The progress clamps, so a wrong value is cosmetic. Called out in the code comment.
+**No remaining estimates in shipped constants.** The earlier draft carried `expectedArchiveEntries = 5_600` as a guess; Task 7 Step 4 now measures it with `tar -tf` and the constant ships as `0` until that step replaces it, so an unmeasured value cannot slip through unnoticed — the test asserts it exceeds the installed tree's 5,324.
+
+**One accepted approximation:** `expectedPrefixEntries = 2027` (Task 5) is a warm-machine measurement of one engine build. It drives only 4a's advisory bar, which is clamped and monotonic, so a wrong denominator yields a lazy bar rather than a wrong one. Deliberate, per decision 7.
 
 **Weight coupling checked.** Task 3's stage weights and Task 5's sub-step weights both assume Task 6 landed. Both are asserted to sum to 100 by tests, so a partial application fails loudly rather than silently skewing the bar — but the *ratios* would be wrong if Task 6 were reverted without recomputing. Recorded in Global Constraints and in the §4.2 spec note.
 
 ---
 
-## Decisions needed from the user
+## Decisions taken
 
-1. **Split `EngineManager.install` into fetch/unpack?** It currently does both in one call, so stages 2 and 3 cannot report separately (Task 15, Step 3). Options: keep merged (stage 3 shows as part of stage 2's progress — less granular, zero risk) or split the method (true six-stage granularity, touches proven download/verify code). Plan assumes **keep merged**.
-2. **Cold-machine weight calibration** (spec §13.4). Needs a Mac that has never run the engine. This machine's Rosetta cache is warm and cannot be selectively cleared. Options: borrow a machine, or accept the current defaults and let runtime recalibration absorb the error.
-3. **`expectedArchiveEntries`** — measure during implementation from real `tar -xvf` output, or accept the 5,600 estimate?
-4. **Notification permission prompt timing.** Plan requests authorization at the start of stage 2 (first real work). Alternative: never prompt, rely solely on the Dock-attention fallback — no permission dialog during first run, at the cost of no notification when OpenXE is in the background.
-5. **Stall threshold of 60 s.** The spike measured a 4.47 s worst gap, so 60 s carries ~13× margin. Confirm, or tighten to ~30 s for faster feedback on a genuinely hung install.
-6. **When does `FontProvisioning.useBatchedImport` get removed?** The flag exists so the per-write path can be restored without a revert (spec §5.3). Keeping it forever means carrying two code paths and a fallback that is never exercised. Suggest removing it — and `provisionFontsPerWrite` with it — once one cold-machine run and one real install have both passed. That is a decision to take later, not now, but it should not be forgotten.
-7. **Stage 4 progress after batching.** Batching removes the 57-step font counter that was going to cover half of stage 4, leaving `wineboot` at 82 % with only the heartbeat (spec §11 R3a). Accept, or add a coarse determinate signal for 4a — the prefix's file count against the ~2,027 a completed boot produces is the obvious candidate, and the 1 Hz poll is already being written for liveness. Plan assumes **accept**; the extra signal is perhaps 20 lines if wanted.
+All seven open questions were resolved before implementation. Recorded here so the reasoning survives the conversation.
+
+| # | Decision | Consequence in this plan |
+|---|---|---|
+| 1 | **`EngineManager.install` stays merged.** Splitting it would buy separate reporting for a ~2 s verify step. | Stages 2 and 3 blend in the UI; Task 15 keeps the single `ensureDefaultActive` call. |
+| 2 | **Cold calibration deferred; ship warm-M2 defaults.** | Weights become data (`StageWeightTable`, Task 3) correctable via `defaults write`. §7.3 **Rule B** withdraws the estimate on 1.5× overshoot (Task 14). Spec states plainly the ETA reads optimistic on slower hardware. §13.4 kept as a runnable procedure. |
+| 3 | **Measure `expectedArchiveEntries`.** | Task 7 Step 4 lists the pinned archive with `tar -tf`; the `5,600` estimate is not shipped. |
+| 4 | **Ask for notification permission only on first stall, or on failure while backgrounded.** | Task 18 Step 3. A clean run never shows a permission dialog, and one can never stack on an error the user is reading. |
+| 5 | **Stall threshold stays 60 s.** | Task 11 unchanged. Rationale and the rejected 30 s alternative recorded in spec §11 R4; listed as a §13.4 calibration output. |
+| 6 | **`useBatchedImport` is removed after one cold run + one real install.** | Removal condition written into the flag's own doc comment (Task 6 Step 3) so it cannot become permanent by default. |
+| 7 | **Add the coarse determinate signal to 4a.** | `BootProgressPoller` (Task 5 Step 3b): prefix file count against ~2,027, advisory, clamped, monotonic. Closes R3a — stage 4 has two independent mechanisms again. |
+
+### Deferred, with an owner
+
+- **Cold-machine calibration (spec §13.4).** Needs hardware with no Rosetta AOT cache. Blocked on availability, not on a decision. It is also condition (a) for removing `useBatchedImport`.
+- **Rule B's 1.5× overshoot factor** and the 60 s stall threshold are both warm-machine guesses. Neither is load-bearing for correctness — each only affects when a message appears — but both should be checked when §13.4 runs.

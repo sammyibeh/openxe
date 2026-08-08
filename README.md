@@ -180,11 +180,11 @@ step-by-step: [`INSTALL.md`](INSTALL.md) · [`docs/platform-support.md`](docs/pl
 
 ## Quickstart
 
-**Just want to run it?** See [`INSTALL.md`](INSTALL.md) — download the app, approve
-it once in **System Settings → Privacy & Security** (it is ad-hoc signed, so macOS
-blocks the first launch), and open it. On Apple Silicon it will offer to install
-Rosetta 2 if needed. The setup wizard takes it from there: one-time engine download
-(~1.7 GB), then NWS download and install, then launch.
+**Just want to run it?** See [`INSTALL.md`](INSTALL.md) — download `OpenXE.dmg`, drag
+the app into `Applications`, then approve it once in **System Settings → Privacy &
+Security** (it is ad-hoc signed, so macOS blocks the first launch). On Apple Silicon
+it will offer to install Rosetta 2 if needed. The setup wizard takes it from there:
+one-time engine download (~1.7 GB), then NWS download and install, then launch.
 
 **Building from source:**
 
@@ -201,6 +201,7 @@ Get Info on any `.exe` → *Open With* → OpenXE → *Change All*.
 
 ```sh
 make test            # unit + gated integration tests
+make package-app     # drag-to-install dist/OpenXE.dmg (built, signed, mount-verified)
 make engine          # build the Wine-Crossover engine from LGPL source
 make package-engine  # tarball + SHA-256 + EngineDescriptor for a built engine
 make fresh           # wipe all OpenXE state back to a true first-run

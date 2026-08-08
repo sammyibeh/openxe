@@ -2,7 +2,7 @@
 # Run `make` (or `make help`) for the list.
 
 .DEFAULT_GOAL := help
-.PHONY: help build test app engine package-engine fresh clean
+.PHONY: help build test app package-app engine package-engine fresh clean
 
 help: ## Show this help
 	@echo "OpenXE make targets:"
@@ -17,6 +17,9 @@ test: ## Run unit + gated integration tests
 
 app: ## Build, ad-hoc sign, and install OpenXE.app to /Applications (scripts/build-app.sh)
 	scripts/build-app.sh
+
+package-app: ## Build + wrap OpenXE.app into a drag-to-install dist/OpenXE.dmg (scripts/package-app.sh)
+	scripts/package-app.sh
 
 engine: ## Build a Wine-Crossover engine from LGPL source (needs ~10-15 GB free; scripts/build-engine.sh)
 	scripts/build-engine.sh

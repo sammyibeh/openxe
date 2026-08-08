@@ -92,7 +92,7 @@ Fixes the user-visible wrong size ("about 1.7 GB" against a measured 177 MB) and
 **Interfaces:**
 - Produces: `SetupCopy.engineSizeSummary: String`, `SetupCopy.engineDownloadBytes: Int64`, `OpenXEPaths.setupLog: URL`, `OpenXEPaths.setupJournal: URL`, `OpenXEPaths.nwsDownloadDirectory: URL`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```swift
 import XCTest
@@ -121,12 +121,12 @@ final class SetupCopyTests: XCTestCase {
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `swift test --filter SetupCopyTests`
 Expected: FAIL — `cannot find 'SetupCopy' in scope`
 
-- [ ] **Step 3: Create `SetupCopy.swift`**
+- [x] **Step 3: Create `SetupCopy.swift`**
 
 ```swift
 import Foundation
@@ -150,7 +150,7 @@ public enum SetupCopy {
 }
 ```
 
-- [ ] **Step 4: Add the path accessors to `Paths.swift`**
+- [x] **Step 4: Add the path accessors to `Paths.swift`**
 
 Insert after the `wineLog` accessor (currently ends at line 51, before the closing brace):
 
@@ -173,7 +173,7 @@ Insert after the `wineLog` accessor (currently ends at line 51, before the closi
     }
 ```
 
-- [ ] **Step 5: Point the three drifted copy sites at the constant**
+- [x] **Step 5: Point the three drifted copy sites at the constant**
 
 In `Sources/OpenXE/WizardWindow.swift:254-257`, replace the `else` branch paragraph:
 
@@ -198,17 +198,17 @@ In `Sources/OpenXE/ProgressWindow.swift:58`:
             setIndeterminate(message: "Unpacking the Windows environment (about 700 MB)…")
 ```
 
-- [ ] **Step 6: Run tests and build**
+- [x] **Step 6: Run tests and build**
 
 Run: `swift test --filter SetupCopyTests && swift build`
 Expected: PASS, build succeeds
 
-- [ ] **Step 7: Verify no stale figures remain**
+- [x] **Step 7: Verify no stale figures remain**
 
 Run: `grep -rn "1\.7 GB\|~200 MB\|~1 GB" Sources/`
 Expected: no output
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add Sources/OpenXECore/SetupCopy.swift Sources/OpenXECore/Paths.swift \
@@ -434,7 +434,7 @@ Pure data. No behaviour, so it is quick — but it locks the weights, which driv
 **Interfaces:**
 - Produces: `SetupStage.ID` (`.preflight .downloadEngine .unpackEngine .preparePrefix .downloadNWS .installNWS`), `SetupStage`, `RetryPolicy`, `SetupCatalog.all`, `SetupCatalog.launchPathSubset`, `SetupEvent`, `SetupFailure`, `SetupFailure.Kind`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```swift
 import XCTest
@@ -523,12 +523,12 @@ final class SetupStageTests: XCTestCase {
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `swift test --filter SetupStageTests`
 Expected: FAIL — `cannot find 'SetupCatalog' in scope`
 
-- [ ] **Step 3: Implement `SetupStage.swift`**
+- [x] **Step 3: Implement `SetupStage.swift`**
 
 ```swift
 import Foundation
@@ -665,7 +665,7 @@ public enum SetupCatalog {
 }
 ```
 
-- [ ] **Step 4: Implement `SetupEvent.swift`**
+- [x] **Step 4: Implement `SetupEvent.swift`**
 
 ```swift
 import Foundation
@@ -715,12 +715,12 @@ public struct SetupFailure: Error, Sendable {
 }
 ```
 
-- [ ] **Step 5: Run tests**
+- [x] **Step 5: Run tests**
 
 Run: `swift test --filter SetupStageTests && swift build`
 Expected: PASS (5 tests), build succeeds
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add Sources/OpenXECore/SetupStage.swift Sources/OpenXECore/SetupEvent.swift \

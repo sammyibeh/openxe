@@ -80,4 +80,53 @@ public enum FontProvisioning {
         ("Franklin Gothic", "Arial"),
         ("Bahnschrift", "Verdana"),
     ]
+
+    /// Spec §5.3. When true, the 28x2+1 font registry values are written by a
+    /// single `wine regedit` import instead of 57 spawned `wine reg add`
+    /// processes — measured 24.38 s -> 1.54 s.
+    ///
+    /// The per-write path is retained as a fallback. If the import ever proves
+    /// unreliable on a machine we cannot inspect, flip this to false to restore
+    /// the proven behaviour with no code revert.
+    ///
+    /// REMOVAL CONDITION (spec §5.3) — this flag is not permanent. Delete it
+    /// and `provisionFontsPerWrite` in one commit once BOTH have happened:
+    ///   (a) one cold-machine run (spec §13.4) with the batched path, and
+    ///   (b) one real end-to-end install with the batched path.
+    /// `scripts/verify-font-batching.sh` stays afterwards as the regression
+    /// guard. A fallback that is never exercised is not a safety net — it is a
+    /// second code path that rots.
+    public static let useBatchedImport = true
+
+    /// The `.reg` file body, generated from `substitutions` so that table stays
+    /// the single source of truth.
+    ///
+    /// REGEDIT4 / ASCII rather than "Windows Registry Editor Version 5.00":
+    /// that format expects UTF-16LE and buys nothing here, because every family
+    /// name above is ASCII. CRLF line endings are what the format specifies.
+    public static func regFileContents() -> String {
+        var lines: [String] = ["REGEDIT4", ""]
+
+        lines.append(#"[HKEY_LOCAL_MACHINE\Software\Microsoft\Windows NT\CurrentVersion\Fonts]"#)
+        lines.append("\"FontAwesome (TrueType)\"=\"\(bundledFontFileName)\"")
+        lines.append("")
+
+        lines.append(#"[HKEY_LOCAL_MACHINE\Software\Microsoft\Windows NT\CurrentVersion\FontSubstitutes]"#)
+        for (from, to) in substitutions { lines.append("\"\(from)\"=\"\(to)\"") }
+        lines.append("")
+
+        lines.append(#"[HKEY_CURRENT_USER\Software\Wine\Fonts\Replacements]"#)
+        for (from, to) in substitutions { lines.append("\"\(from)\"=\"\(to)\"") }
+        lines.append("")
+
+        return lines.joined(separator: "\r\n") + "\r\n"
+    }
+
+    /// Fixtures for `scripts/verify-font-batching.sh`, written from the live
+    /// table above so the script can never drift from the app's own data.
+    public static func writeVerificationFixtures(to directory: URL) throws {
+        let subs = substitutions.map { "\($0.from)|\($0.to)" }.joined(separator: "\n") + "\n"
+        try Data(subs.utf8).write(to: directory.appendingPathComponent("substitutions.txt"))
+        try Data(regFileContents().utf8).write(to: directory.appendingPathComponent("fonts.reg"))
+    }
 }

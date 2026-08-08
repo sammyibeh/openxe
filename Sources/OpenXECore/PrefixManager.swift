@@ -276,6 +276,69 @@ public final class PrefixManager: Sendable {
         let fontsDir = paths.prefix.appendingPathComponent("drive_c/windows/Fonts")
         try? fm.createDirectory(at: fontsDir, withIntermediateDirectories: true)
 
+        // The bundled font file must be copied either way — the registry value
+        // only names it.
+        if let src = Bundle.main.url(forResource: FontProvisioning.bundledFontResource,
+                                     withExtension: "ttf") {
+            let dst = fontsDir.appendingPathComponent(FontProvisioning.bundledFontFileName)
+            try? fm.removeItem(at: dst)
+            try? fm.copyItem(at: src, to: dst)
+        }
+
+        progress?(.step(.fonts, fraction: 0, detail: "Registering fonts…"))
+
+        if FontProvisioning.useBatchedImport, importFontRegistry(env: env, log: log) {
+            progress?(.step(.fonts, fraction: 1, detail: "Registering fonts…"))
+            return
+        }
+
+        // Fallback: the proven per-write path (spec §5.3).
+        log?.note("font batch import unavailable or failed; using per-write fallback")
+        provisionFontsPerWrite(env: env, log: log, progress: progress)
+    }
+
+    /// One `wine regedit <file>` import. Best-effort: returns false on any
+    /// failure so the caller falls back. Never throws — font provisioning must
+    /// never fail the prefix build.
+    private func importFontRegistry(env: [String: String], log: SetupLog?) -> Bool {
+        let fm = FileManager.default
+        let regURL = paths.prefix.appendingPathComponent("openxe-fonts.reg")
+        defer { try? fm.removeItem(at: regURL) }
+
+        do {
+            // ASCII by construction (spec §5.3); .ascii encoding makes that a
+            // hard guarantee rather than an assumption.
+            guard let data = FontProvisioning.regFileContents().data(using: .ascii) else {
+                log?.note("font .reg contents were not ASCII; falling back")
+                return false
+            }
+            try data.write(to: regURL)
+        } catch {
+            log?.note("could not write font .reg: \(error.localizedDescription)")
+            return false
+        }
+
+        let result = try? Subprocess.run(engine.activeWineBinary,
+                                         arguments: ["regedit", regURL.path],
+                                         environment: env, timeout: 120,
+                                         logHandle: log?.handle)
+        guard let result, result.status == 0 else {
+            log?.note("regedit import exited \(result?.status.description ?? "n/a")")
+            return false
+        }
+        log?.note("font registry imported in one pass (\(PrefixManager.fontWriteCount) values)")
+        return true
+    }
+
+    /// The proven 57-spawn path, retained behind `FontProvisioning.useBatchedImport`
+    /// (spec §5.3). Its per-write counter is now the fallback path's progress
+    /// reporting.
+    private func provisionFontsPerWrite(env: [String: String], log: SetupLog?,
+                                        progress: (@Sendable (PrefixProgress) -> Void)?) {
+        let fm = FileManager.default
+        let fontsDir = paths.prefix.appendingPathComponent("drive_c/windows/Fonts")
+        try? fm.createDirectory(at: fontsDir, withIntermediateDirectories: true)
+
         let total = Self.fontWriteCount
         var done = 0
         func tick() {

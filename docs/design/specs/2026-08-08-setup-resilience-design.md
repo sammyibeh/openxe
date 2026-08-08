@@ -137,7 +137,7 @@ public enum SetupEvent: Sendable {
 }
 ```
 
-`detail` is the plain-English sub-line ("Unpacking… 4,210 of 5,600 files", "Setting up Windows for the first time…"). The technical line shown under the disclosure triangle comes from the tail of `SetupLog`, not from the event.
+`detail` is the plain-English sub-line ("Unpacking… 4,210 files", "Setting up Windows for the first time…"). The technical line shown under the disclosure triangle comes from the tail of `SetupLog`, not from the event.
 
 ### 4.2 SetupStage
 
@@ -169,6 +169,16 @@ public struct SetupStage: Sendable {
 | 6 | `installNWS` | Installing New World Scheduler | 15 | no | none (manual only) | 1200 s |
 
 Weights are static defaults. The ETA calculation (§7.3) rescales them from observed cost, so a slow network does not make the bar lie for the whole run.
+
+**Weights are data, not logic.** Because the cold-machine calibration (§13.4) is deferred, the numbers above will need correcting later on evidence this project does not yet have. No code path may hardcode a weight: they live in one declarative table, and that table is resolved at startup as
+
+```
+UserDefaults "OpenXEStageWeights"  →  built-in defaults
+```
+
+The override is a dictionary of stage id to integer weight. It is accepted only if it names every stage exactly once, every value is positive, and the values sum to 100; an override failing any of those is ignored and the rejection logged, so a bad edit degrades to the shipped defaults rather than a broken bar. This makes a calibration run correctable with `defaults write dev.openxe.OpenXE OpenXEStageWeights …` and no rebuild — which matters for an ad-hoc-signed app where editing a bundled resource would invalidate the signature.
+
+The same applies to the stage-4 sub-step weights (§5.1) and to the two constants the spikes produced (`expectedArchiveEntries`, the stall threshold): each is a named value in one place, never an inline literal at a use site.
 
 **Stage boundary between 2 and 3 (explicit, to remove a reading ambiguity).** SHA-256 verification is the **terminal act of stage 2**, not the opening act of stage 3. Stage 2 is complete only when the archive is on disk *and* its checksum matches; that is what sets `archiveVerified` in the journal. A mismatch is therefore a stage-2 failure and re-downloads (the existing behaviour at `EngineManager.swift:211-225`, made visible per §9.2). Stage 3 consumes an already-verified archive and never re-verifies, which is why it needs no retry policy of its own — restarting it costs only the unpack.
 
@@ -225,6 +235,16 @@ Weights below are **measured** (§3.1), not estimated.
 
 **Stage 4 is now dominated by 4a.** Before batching, fonts were 52 % of the stage and 4a only 40 %; after, 4a is 82 %. That is a real trade-off, not a free win — see §5.3.
 
+**4a also gets a coarse determinate bar (closes §11 R3a).** Batching the fonts left 4a covering 82 % of stage 4 with liveness evidence only, which concentrated the stage's entire progress story on one mechanism. A completed `wineboot` produces **~2,027 files** in the prefix (measured, §3.1), so the same 1 Hz poll that supplies the liveness signal also supplies a fraction:
+
+```
+fraction(4a) = min(filesSeen / expectedPrefixEntries, 1.0)     // expectedPrefixEntries = 2027
+```
+
+**Advisory, clamped, and monotonic.** The reported value never decreases — a running maximum is kept, so a poll that transiently reads fewer entries cannot rewind the bar. A denominator that is wrong for some engine build degrades gracefully in both directions: too low and the bar saturates early then waits at 100 % on the heartbeat; too high and it advances slowly and completes on stage transition. Neither shows a *wrong* bar, only a lazy one. The count never gates completion — `wineboot` exiting does.
+
+The heartbeat below and this counter run together and are independent: the counter answers "how far", the heartbeat answers "still alive".
+
 **4a — heartbeat mechanism (verified by spike, §3.1).** `wineboot` gets a **dual signal**, and both parts are required because neither is sufficient alone:
 
 1. **Streamed output.** `wineboot`'s combined output is teed to `SetupLog` as it arrives; the disclosure triangle shows the last line live. `Subprocess`'s readability handler (`Subprocess.swift:52-61`) already receives chunks — the change is to surface them, not to add plumbing. Measured worst gap with today's `WINEDEBUG`: **9.71 s** — marginal on its own.
@@ -243,7 +263,16 @@ Leaving `Paths.swift:69` untouched is the cheapest correct outcome, and it remov
 
 `tar -xf` (`EngineManager.swift:300-303`) becomes `tar -xvf`. Each extracted path is one line; the coordinator counts lines and reports `filesSeen / expectedEntries`, a constant on the stage definition, clamped to 1.0 and degrading to indeterminate if exceeded.
 
-**`expectedEntries` must be measured from real `tar -xvf` output during implementation — do not use 5,324.** That figure is the *installed* tree (`engine/gcenx-stable-11.0_1`), which is a lower bound on the archive: it excludes everything outside the `Contents/Resources/wine` subtree that `findWineRoot` discards (`EngineManager.swift:311-314`), and includes two files written after extraction (`descriptor.json`, `version`). Using it unadjusted would peg the sub-bar at 100 % partway through the unpack. The clamp makes that cosmetic rather than harmful, but the constant should still be right.
+**`expectedEntries` is measured, not estimated.** The obvious candidate — 5,324, the installed tree — is a lower bound on the archive: it excludes everything outside the `Contents/Resources/wine` subtree that `findWineRoot` discards (`EngineManager.swift:311-314`), and includes two files written after extraction (`descriptor.json`, `version`). Using it would peg the sub-bar at 100 % partway through the unpack.
+
+The real value is obtained once, at implementation time, by listing the pinned archive without extracting it:
+
+```
+curl -L -o engine.tar.xz <EngineCatalog.stock.url>
+tar -tf engine.tar.xz | wc -l
+```
+
+and recorded as `expectedArchiveEntries` alongside the other calibration constants (§4.2). It is re-derived only if the pinned engine changes. The clamp remains as a safety net, but the constant is not shipped as a guess.
 
 Log volume is bounded by writing every 200th line to `SetupLog` while counting all of them. This also makes `tar` a first-class liveness source, which removes any need for filesystem-size polling.
 
@@ -265,7 +294,9 @@ Quarantine stripping (`EngineManager.swift:357-364`) — `chmod -R` and `xattr -
 
 **Best-effort, exactly as today.** A non-zero exit, a missing `regedit`, or a write failure is logged and swallowed. Font provisioning must never fail the prefix build — that is the existing contract at `PrefixManager.swift:178-181` and it does not change. A prefix whose fonts did not register still boots and still runs NWS; it may fall back to a less pleasing face.
 
-**The per-write path is retained**, behind `FontProvisioning.useBatchedImport` (default `true`). If the import proves unreliable on a machine we cannot inspect, flipping one flag restores the proven behaviour without a code revert. The flag is removed only after the batched path has survived real use.
+**The per-write path is retained**, behind `FontProvisioning.useBatchedImport` (default `true`). If the import proves unreliable on a machine we cannot inspect, flipping one flag restores the proven behaviour without a code revert.
+
+**Removal condition, so the flag does not become permanent by default.** Both the flag and `provisionFontsPerWrite` are deleted once **(a)** one cold-machine run (§13.4) and **(b)** one real end-to-end install have both completed with the batched path. A fallback that is never exercised is not a safety net — it is a second code path that rots. Until then the flag stays; after both conditions are met it goes, in one commit, with `scripts/verify-font-batching.sh` retained as the regression guard.
 
 **Equivalence is the acceptance bar, not absence of errors.** §3.2 records a byte-identical diff of all five affected registry keys, including the WoW64-redirected views. Any future change to the generator must reproduce that diff.
 
@@ -404,9 +435,17 @@ On `.recovered` it reverts to the normal layout without ceremony.
 
 ### 7.3 ETA
 
-`remaining = (Σ weights of incomplete stages) × secondsPerWeightUnit`, where `secondsPerWeightUnit` starts at the reference `392 / 100 = 3.92 s` and is recalibrated after each completed stage from that stage's actual elapsed time against its weight. Within a byte-bounded stage, the in-stage remainder uses observed throughput rather than the weight.
+`remaining = (Σ weights of incomplete stages) × secondsPerWeightUnit`, where `secondsPerWeightUnit` starts at the reference `241 / 100 = 2.41 s` and is recalibrated after each completed stage from that stage's actual elapsed time against its weight. Within a byte-bounded stage, the in-stage remainder uses observed throughput rather than the weight.
 
-**Suppression rule.** No remaining-time estimate is shown until at least one stage has completed *or* 15 s of download throughput has been observed — whichever comes first. Until then the line reads only elapsed time. An early ETA computed from nothing is worse than no ETA.
+**Every reference figure came from a warm Apple Silicon Mac (§3.1). On slower hardware, or on a first run paying Rosetta AOT translation, the initial estimate will read optimistic** — and the population most affected is exactly the one most likely to conclude the installer has hung. Two rules keep a confidently wrong number off the screen.
+
+**Rule A — suppression before data.** No remaining-time estimate is shown until at least one stage has completed *or* 15 s of download throughput has been observed, whichever comes first. Until then the line reads only elapsed time. An early ETA computed from nothing is worse than no ETA.
+
+**Rule B — suppression on overshoot.** If the in-flight stage's elapsed time exceeds its expected duration (`weight × secondsPerWeightUnit`) by a factor of **1.5 or more**, the numeric estimate is withdrawn and the line reads:
+
+> `4 min 20 sec elapsed · still working — this can take longer on some Macs`
+
+The estimate returns once the stage completes and recalibration has absorbed the real duration; subsequent stages then benefit from a `secondsPerWeightUnit` that reflects this machine rather than the reference one. Rule B is what makes the warm-machine defaults safe to ship: on hardware where the weights are wrong, the ETA withdraws itself rather than counting down to a number it cannot meet.
 
 Displayed granularity is coarse on purpose: "less than a minute", then whole minutes. A counter ticking second-by-second invites the user to watch it and distrust it.
 
@@ -539,11 +578,20 @@ Failure becomes a real wizard state, replacing the red label at `WizardWindow.sw
 
 ### 9.4 Notification
 
-Setup is a walk-away operation, so completion and failure both notify:
+Setup is a walk-away operation, so completion and failure both notify. But a permission dialog is itself an interruption, so **authorization is requested only once the run has given a concrete reason to want it.**
 
-- `UNUserNotificationCenter`, authorization requested lazily at the start of stage 2 (not at launch — no prompt for a user who never starts setup).
-- **Fallback, required:** if authorization is denied or unavailable, `NSApp.requestUserAttention(.criticalRequest)` plus activating the window. See §11 R5 — an ad-hoc-signed, non-notarized `LSUIElement` app is not guaranteed a working notification path, so the fallback is not optional garnish.
-- Notifications fire only when OpenXE is not frontmost.
+**Trigger, at most once per install, on the first of:**
+
+1. **A `.stalled` event — the primary trigger.** The user has been waiting ≥60 s with no sign of life; this is precisely when a background notification becomes valuable, and it is a calm moment rather than a bad one.
+2. **A `.failed` event, and only while OpenXE is not frontmost** — the secondary trigger.
+
+Never at launch, never at the start of a stage, never during normal progress. A user whose install runs cleanly is never asked.
+
+**Why the stall trigger is primary.** Stacking a permission dialog on top of an error message is the worst available timing: the user is already dealing with a failure and is being asked to make an unrelated decision about notifications. The stall trigger fires earlier in most bad runs anyway — 60 s of silence usually precedes a timeout or a subprocess failure — so in practice authorization is settled before any failure appears. The frontmost condition on trigger 2 closes the remaining case: if OpenXE is in front, the user is already looking at the error and needs no notification, so nothing is asked.
+
+**Fallback, required and unconditional.** If authorization is denied, never requested, or unavailable, `NSApp.requestUserAttention(.criticalRequest)` plus activating the window. See §11 R5 — an ad-hoc-signed, non-notarized `LSUIElement` app is not guaranteed a working notification path, so this is the only mechanism guaranteed to work and it is not optional garnish.
+
+Notifications themselves fire only when OpenXE is not frontmost.
 
 ### 9.5 Preflight (stage 1)
 
@@ -591,11 +639,21 @@ One constant, three sites: `WizardWindow.swift:256`, `AppDelegate.swift:79`, `Pr
 
 **R3 — RESOLVED by spike, 2026-08-08.** Was: "the `wineboot` heartbeat is unproven, the single largest unknown in the spec." Measurement (§3.1) found a working signal: **output ∪ 1 Hz prefix filesystem growth, worst gap 4.47 s** against a 10 s criterion, with `WINEDEBUG` left untouched. `+loaddll` was tested and rejected as no better than the free option. The residual risk is only that both figures come from a fast M2 with a warm Rosetta cache — see R2a.
 
-**R3a — Font batching concentrates risk on the heartbeat instead of diversifying away from it.** Before §5.3, stage 4 had two independent sources of progress evidence: the `wineboot` heartbeat (40 % of the stage) and a 57-step font counter ticking every 559 ms (52 %). After batching, the counter is a 1.5 s blip and the heartbeat covers 82 % of the stage alone. If R3's dual signal degrades on some machine — a quieter `wineboot`, or a filesystem poll that misses growth — there is no longer a second mechanism carrying half the stage. The net is still favourable (29 s of mostly-covered time beats 59 s of half-covered time), and the stall watchdog remains as a backstop, but the failure mode is now less graceful. Worth re-checking in the cold calibration run (§13.4): confirm the max inter-event gap during 4a on a cold machine still clears the 10 s criterion without the font counter propping it up.
+**R3a — RESOLVED by adding a second, independent signal to 4a.** Batching the fonts had left stage 4 with a single progress mechanism where it previously had two: the heartbeat covering 82 % of the stage alone, with the 57-step counter reduced to a 1.5 s blip. §5.1 now adds a coarse determinate bar driven by prefix file count against the ~2,027 a completed boot produces — advisory, clamped and monotonic, sharing the 1 Hz poll the liveness signal already needs. Stage 4 is back to two independent mechanisms answering different questions ("how far" and "still alive"), so degradation of either is no longer a single point of failure. The cold calibration run (§13.4) should still confirm the max inter-event gap during 4a clears the 10 s criterion on slower hardware.
 
-**R2a — Stage weights rest on two remaining estimates and one warm-machine measurement.** Stages 2 (download, network-dependent) and 3 (unpack) were never measured; stage 4's 59 s came from a machine that had already Rosetta-translated the engine. On a cold, slower Mac all three grow, and not by the same factor — so the *ratios* that drive the bar may shift even though each absolute figure is a floor. §7.3's recalibration absorbs this within a run, but the first run on a new machine is exactly the one a user watches. Mitigation is the cold calibration in §13.4; until then, treat the weights as good defaults rather than settled constants.
+**R2a — ACCEPTED with mitigation: shipping on warm-machine defaults.** Stages 2 (download, network-dependent) and 3 (unpack) were never measured; stage 4's figure came from a machine that had already Rosetta-translated the engine. On a cold, slower Mac all three grow, and not by the same factor — so the *ratios* driving the bar may shift even though each absolute figure is a floor. **The practical consequence is that the initial ETA reads optimistic on exactly the hardware most likely to conclude the installer has hung.**
 
-**R4 — Stall-watchdog false positives.** 60 s of silence is a heuristic. A slow Mac doing genuine work during Mono installation could trip it. The design deliberately makes `stalled` non-terminal and "Keep Waiting" cheap (it resets the detector and doubles the threshold to 120 s), so a false positive costs one click, not a failed setup. The threshold is a tunable constant, not a hardcoded literal.
+Cold calibration is deliberately deferred (no suitable machine available), so three things carry the risk instead:
+
+1. **§7.3 Rule B** withdraws the numeric estimate as soon as the in-flight stage overshoots its expectation by 1.5×, rather than counting down to a number it cannot meet. This is the primary mitigation and it is what makes the warm defaults safe to ship.
+2. **§7.3 recalibration** means only the first stage of the first run uses reference numbers; everything after uses this machine's observed pace.
+3. **§4.2 weights-as-data** means a later calibration is applied with `defaults write`, not a rebuild.
+
+Residual risk: a user on slow hardware sees an optimistic estimate for the duration of stage 2, then sees it withdraw. That is honest but not pleasant. Treat the weights as good defaults, not settled constants, until §13.4 runs.
+
+**R4 — Stall-watchdog false positives.** 60 s of silence is a heuristic. A slow Mac doing genuine work during Mono installation could trip it. The design deliberately makes `stalled` non-terminal and "Keep Waiting" cheap (it resets the detector and doubles the threshold to 120 s), so a false positive costs one click, not a failed setup.
+
+**60 s is retained deliberately over a tighter 30 s.** The measured worst gap is 4.47 s, so 30 s would still carry 6.7× margin and would surface a genuinely hung install twice as fast. It is rejected because legitimate gaps grow on slower hardware — the same machines where the ETA already reads optimistic — and a false "something's wrong" on a working install is worse than a late warning on a broken one. The threshold is a named constant, not an inline literal, and is a calibration output of §13.4.
 
 **R5 — Notifications may not work at all.** An ad-hoc-signed, non-notarized `LSUIElement` app has no guarantee of `UNUserNotificationCenter` authorization, particularly when launched from a non-standard location. The `requestUserAttention` fallback (§9.4) is mandatory for this reason.
 
@@ -660,12 +718,24 @@ Plus: `make fresh` end-to-end with the notification path exercised; ⌘Q during 
 
 ### 13.4 Cold-machine weight calibration
 
-The §4.2 weights rest on two estimates and one warm-machine measurement (R2a). One calibration run closes this, and it needs no new tooling — `SetupLog` already records per-stage elapsed times (§4.4).
+**Status: deferred by decision — the project is shipping on warm-machine defaults (R2a).** This section is kept as a runnable procedure for whenever a suitable machine is available. It needs no new tooling: `SetupLog` already records per-stage elapsed times (§4.4), which is most of the point of having it.
 
-- Run `make fresh` on a Mac that has **never** run the engine (no Rosetta AOT cache), on a metered-bandwidth connection, and record all six stage durations from `setup.log`.
-- Recompute the weights from those durations and update §4.2 if any weight moves by more than ±5 points.
-- The developer's own Mac cannot serve for this: its Rosetta cache is warm and cannot be selectively cleared. **This step requires either a second machine or a user decision to accept the current defaults** — flagged rather than assumed.
-- The measured 59 s stage-4 floor is a useful lower bound to check the result against: a cold run below it means the run was not actually cold.
+**Procedure.**
+
+- Run `make fresh` on a Mac that has **never** run the engine (no Rosetta AOT cache), on a representative connection, and record all six stage durations from `setup.log`.
+- Recompute the weights from those durations. Apply them with `defaults write dev.openxe.OpenXE OpenXEStageWeights …` (§4.2) to confirm they behave, then fold them into the built-in defaults.
+- The developer's own Mac cannot serve: its Rosetta cache is warm and cannot be selectively cleared.
+- The measured ~29 s stage-4 figure is a lower bound to sanity-check against — a cold run below it means the run was not actually cold.
+
+**Calibration outputs to capture while there.** Each of these is currently a warm-machine value and this is the only occasion to check them:
+
+| Constant | Current | What to check |
+|---|---|---|
+| Stage weights (§4.2) | 1 / 37 / 25 / 12 / 10 / 15 | Recompute from the six durations |
+| Stall threshold (§7.2) | 60 s | Longest *legitimate* inter-event gap; 60 s must stay comfortably above it |
+| Max inter-event gap in 4a (§11 R3a) | 4.47 s warm | Must still clear the 10 s criterion (§14.1) |
+| `expectedArchiveEntries` (§5.2) | measured from the pinned archive | Unchanged unless the engine is repinned |
+| `useBatchedImport` (§5.3) | `true` | This run is condition (a) of two for deleting the flag |
 
 ---
 

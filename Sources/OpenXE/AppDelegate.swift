@@ -24,6 +24,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var settingsWindow: SettingsWindowController?
     private var wizardWindow: WizardWindowController?
 
+    // MARK: setup log (instrumentation spec §3.2)
+
+    /// One `SetupLog` per app run, opened on first use and shared with the
+    /// wizard. Never closed explicitly: `SetupLog` writes straight through the
+    /// file handle, so process exit loses nothing, and setup outlives any one
+    /// window. Failure to open is non-fatal — setup runs unlogged rather than
+    /// not at all.
+    private var openedSetupLog: SetupLog?
+
+    private func setupLog() -> SetupLog? {
+        if let openedSetupLog { return openedSetupLog }
+        guard let log = try? SetupLog(url: paths.setupLog) else { return nil }
+        log.beginRun(buildID: Runner.currentBuildID,
+                     engineID: engine.activeDescriptor?.id ?? EngineCatalog.default.id,
+                     freeBytes: Self.freeBytesForImportantUsage())
+        openedSetupLog = log
+        return log
+    }
+
+    /// Space macOS will actually make available for a purgeable-aware download,
+    /// which is the figure that matters for a 177 MB engine plus its unpack.
+    private static func freeBytesForImportantUsage() -> Int64 {
+        let home = URL(fileURLWithPath: NSHomeDirectory())
+        let values = try? home.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey])
+        return values?.volumeAvailableCapacityForImportantUsage ?? 0
+    }
+
     // MARK: lifecycle
 
     func application(_ application: NSApplication, open urls: [URL]) {
@@ -86,21 +113,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let engine = self.engine
         let prefixManager = self.prefixManager
+        let log = setupLog()
         Task {
             do {
                 if needsEngine {
-                    try await engine.ensureDefaultActive { update in
+                    try await engine.ensureDefaultActive(log: log) { update in
                         Task { @MainActor [weak self] in self?.progressWindow?.apply(update) }
                     }
                 }
                 progress.setIndeterminate(message: "Booting the Windows environment (first time only)…")
                 try await Task.detached(priority: .userInitiated) {
-                    try prefixManager.ensurePrefix()
+                    try prefixManager.ensurePrefix(log: log)
                 }.value
                 self.progressWindow?.close()
                 self.progressWindow = nil
                 self.launchPending()
             } catch {
+                log?.note("setup failed: \(error.localizedDescription)")
                 self.progressWindow?.close()
                 self.progressWindow = nil
                 self.working = false
@@ -185,8 +214,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// it trusted the installer's exit status. Both now come from the same
     /// place as everything else: SetupCopy and RosettaGate.
     private func ensureRosetta(gate: RosettaGate = .live()) async -> Bool {
+        // Stage 1 brackets the automated check only. The prompt, the user's
+        // authentication and the installer that may follow are minutes of human
+        // latency and are recorded as notes, not folded into a 15 s stage.
+        let log = setupLog()
+        let stage1 = log?.startStage(.preflight)
         let outcome = await Task.detached(priority: .userInitiated) { gate.check() }.value
+        if let stage1 { log?.endStage(.preflight, startedAt: stage1) }
         guard case .missing(let failure) = outcome else { return true }
+        log?.note("Rosetta 2 missing: \(failure.userMessage)")
 
         NSApp.activate(ignoringOtherApps: true)
         let alert = NSAlert()
@@ -212,6 +248,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let progress = ProgressWindowController()
         progressWindow = progress
         progress.show(message: SetupCopy.rosettaInstalling)
+        let log = setupLog()
+        let installStart = DispatchTime.now()
         let ticker = InstallTicker { [weak progress] message in
             progress?.setIndeterminate(message: message)
         }
@@ -231,8 +269,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         switch install {
         case .installed:
+            log?.note("Rosetta 2 installed", since: installStart)
             return true
         case .failed(let failure):
+            log?.note("Rosetta 2 install failed (\(failure.userMessage))", since: installStart)
             showError(title: SetupCopy.rosettaTitle,
                       message: failure.userMessage + "\n\n" + failure.suggestedAction,
                       offerLog: false)
@@ -260,7 +300,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if wizardWindow == nil {
             wizardWindow = WizardWindowController(
                 engine: engine, prefixManager: prefixManager, nws: nwsInstaller,
-                runner: runner, paths: paths,
+                runner: runner, paths: paths, log: setupLog(),
                 onClose: { [weak self] in
                     self?.wizardWindow = nil
                     self?.terminateIfIdle()

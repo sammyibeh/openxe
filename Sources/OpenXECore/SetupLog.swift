@@ -65,7 +65,40 @@ public final class SetupLog: @unchecked Sendable {
         emit(String(format: "--- stage %@ end (%.1fs) ---", stage.rawValue, elapsed))
     }
 
+    /// Open a stage bracket and return a MONOTONIC mark to close it with
+    /// (instrumentation spec §3.1). `DispatchTime`, not `Date`: a multi-minute
+    /// cold run can outlive an NTP step, and a wall-clock delta would then be
+    /// inflated or negative.
+    ///
+    /// This is a timing bracket and nothing else — no retry, no ceiling, no
+    /// cancellation. Task 15's `ProductionStageRunner` owns those and calls
+    /// `beginStage`/`endStage(_:elapsed:)` directly; this pair is deleted then.
+    @discardableResult
+    public func startStage(_ stage: SetupStage.ID, attempt: Int = 1) -> DispatchTime {
+        beginStage(stage, attempt: attempt)
+        return DispatchTime.now()
+    }
+
+    /// Close a bracket opened by `startStage`. Emitted only on success: an
+    /// unterminated `begin` is how the log says where the run died.
+    public func endStage(_ stage: SetupStage.ID, startedAt: DispatchTime) {
+        endStage(stage, elapsed: Self.elapsed(since: startedAt))
+    }
+
+    static func elapsed(since start: DispatchTime) -> TimeInterval {
+        // Unsigned wrapping subtraction: uptimeNanoseconds is monotonic, so the
+        // result is always the true forward interval.
+        Double(DispatchTime.now().uptimeNanoseconds &- start.uptimeNanoseconds) / 1_000_000_000
+    }
+
     public func note(_ message: String) { emit(message) }
+
+    /// A sub-stage measurement the six stage brackets do not carry — the engine
+    /// transfer/verify split, the Rosetta install. Kept when Task 14 supersedes
+    /// the brackets themselves.
+    public func note(_ message: String, since start: DispatchTime) {
+        emit(String(format: "%@ in %.1fs", message, Self.elapsed(since: start)))
+    }
 
     /// Raw subprocess bytes, written verbatim without a timestamp prefix.
     public func write(_ data: Data) {

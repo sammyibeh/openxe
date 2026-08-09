@@ -35,7 +35,7 @@ OpenXE's first run works when nothing goes wrong and is close to unobservable wh
 
 ## 3. Measurements
 
-Every weight, threshold, and string in this spec derives from measurements taken 2026-08-08 on the developer's Mac against the pinned engine `gcenx-stable-11.0_1`.
+Every weight, threshold, and string in this spec derives from measurements taken on the developer's Mac against the pinned engine `gcenx-stable-11.0_1`: the spikes of 2026-08-08 (§3.1, §3.2) and the full-run calibration of 2026-08-09 (§3.3), which supersedes them as the source of the §4.2 weights.
 
 | Quantity | Value | Source |
 |---|---|---|
@@ -81,7 +81,33 @@ The diff covered `Software\Wine\Fonts\Replacements` (user.reg), and both the nat
 
 > **Method note.** The first run of this comparison reported "identical" from two *empty* extractions — `awk -v` consumes backslashes, so the registry key patterns never matched. The figures above are from the corrected extraction, which recovers 647 value lines per side. An equivalence result that compares nothing looks exactly like a pass.
 
-**Caveat on all of the above.** The machine had already Rosetta-translated and cached the engine's binaries. A genuine first run on a friend's Mac pays one-time Rosetta AOT translation that these runs did not, so every figure here is **a floor, not a typical cold value** — the 24 s boot, the 559 ms per `reg add`, and the 1.54 s import alike. The weights in §4.2 use them anyway, because the ETA recalibration in §7.3 exists precisely to absorb this class of error and a measured floor beats the 180 s guess it replaces. A cold-machine calibration run is a plan step (§13.4).
+**Caveat on all of the above.** The machine had already Rosetta-translated and cached the engine's binaries. A genuine first run on a friend's Mac pays one-time Rosetta AOT translation that these runs did not, so every figure here is **a floor, not a typical cold value** — the 24 s boot, the 559 ms per `reg add`, and the 1.54 s import alike. The weights in §4.2 no longer derive from these numbers; they come from the full-run calibration in §3.3. The spike figures remain the source for the stage-4 mechanism decisions (§5.1) and the sanity floor in §13.4.
+
+### 3.3 Full-run calibration (2026-08-09) — the source of the §4.2 weights
+
+One instrumented run of the whole wizard on a freshly reset install, timings taken from `setup.log`.
+
+| | |
+|---|---|
+| Date | 2026-08-09 |
+| Machine | macOS 27, build 26A5388g, Apple Silicon |
+| Engine | `gcenx-stable-11.0_1` (the pinned `EngineCatalog.stock`) |
+| Total across the six stages | **464.8 s** |
+
+| Stage | Measured | Share | Weight (§4.2) |
+|---|---|---|---|
+| `preflight` | 0.4 s | 0.09 % | **1** |
+| `downloadEngine` | 314.1 s | 67.58 % | **67** |
+| `unpackEngine` | 14.1 s | 3.03 % | **3** |
+| `preparePrefix` | 37.5 s | 8.07 % | **8** |
+| `downloadNWS` | 81.1 s | 17.45 % | **17** |
+| `installNWS` | 17.6 s | 3.79 % | **4** |
+
+Weights are the shares rounded by largest remainder to integers summing to exactly 100. `preflight` is floored up to 1 so its segment is not zero-width, and that 1 is taken off `downloadEngine`'s 68.
+
+**This is substantially a bandwidth snapshot, not a machine constant.** Both download stages are network-bound — NWS transferred at 618 KB/s, ~4.9 Mbit/s — and together they take **84 %** of the run. On a fast connection that share collapses and these weights are wrong in the opposite direction: `downloadEngine` far too heavy, `preparePrefix` and `installNWS` far too light. They are one link on one afternoon, recorded as such in the comment above `StageWeightTable.builtIn`. The §7.3 recalibration and the `OpenXEStageWeights` override are the two mechanisms that absorb it.
+
+**Rosetta remains uncontrolled.** The AOT cache cannot be cleared on this machine (runbook §2), so `preparePrefix` and `installNWS` are still floors and §13.4's condition (a) for removing `useBatchedImport` stays unmet. What changed is that stages 2 and 3, which were pure estimates, are now measured.
 
 Note the two spikes measured the per-write path independently and agreed closely: 32 s projected from 10 timed writes (§3.1) against 24.38 s for the real 57 (§3.2). The gap is warm-cache drift across runs; both support the same conclusion.
 
@@ -155,28 +181,28 @@ public struct SetupStage: Sendable {
 }
 ```
 
-**The six stages and their weights.** Weights are the stage's share of a reference run, derived from §3. Reference seconds: preflight 2, download 90, unpack 60, **prefix 29 (measured, §3.1 + §3.2)**, NWS download 25, NWS install 35 — total 241 s.
+**The six stages and their weights.** Weights are the stage's share of a **measured** 464.8 s reference run (§3.3, 2026-08-09), rounded by largest remainder to sum to exactly 100.
 
-> **Revised twice on 2026-08-08 by spike.** The prefix reference began as a 180 s estimate. Direct measurement put it at 59 s (§3.1), then batching the font writes (§5.3) cut it to **29 s**. Stage 4's weight fell 46 → 22 → **12**. **These weights assume batched fonts**; if the batched import is ever reverted to the per-write path, stage 4 returns to ~59 s and the weights must be recomputed. Stages 2 and 3 remain estimates (§11 R2a).
+> **Revised three times.** The prefix reference began as a 180 s estimate; direct measurement put it at 59 s (§3.1) and batching the font writes (§5.3) cut it to 29 s, taking stage 4's weight 46 → 22 → 12. The 2026-08-09 full-run calibration (§3.3) then replaced every remaining estimate with a measurement, and the picture changed shape: on that link the two download stages are 84 % of the run, so stage 2 rose 37 → **67** while stages 3 and 6 fell to 3 and 4. **These weights still assume batched fonts** (§5.3); reverting to the per-write path returns stage 4 to ~59 s and requires a recompute. **They also encode one connection's bandwidth** — see the caveat in §3.3.
 
 | # | ID | Display name | Weight | Resumable | Retry | Ceiling |
 |---|---|---|---|---|---|---|
 | 1 | `preflight` | Checking your Mac | 1 | n/a | none | 15 s |
-| 2 | `downloadEngine` | Downloading the Windows environment | 37 | **yes** (HTTP Range) | 3 × network, then 2 × integrity | 60 s idle |
-| 3 | `unpackEngine` | Unpacking the Windows environment | 25 | no (restartable from the verified archive) | none (restart is free) | 900 s |
-| 4 | `preparePrefix` | Preparing the Windows environment | **12** | **no — atomic** | none (manual only) | 900 s |
-| 5 | `downloadNWS` | Downloading New World Scheduler | 10 | **yes** (new) | 3 × network | 600 s idle |
-| 6 | `installNWS` | Installing New World Scheduler | 15 | no | none (manual only) | 1200 s |
+| 2 | `downloadEngine` | Downloading the Windows environment | **67** | **yes** (HTTP Range) | 3 × network, then 2 × integrity | 60 s idle |
+| 3 | `unpackEngine` | Unpacking the Windows environment | **3** | no (restartable from the verified archive) | none (restart is free) | 900 s |
+| 4 | `preparePrefix` | Preparing the Windows environment | **8** | **no — atomic** | none (manual only) | 900 s |
+| 5 | `downloadNWS` | Downloading New World Scheduler | **17** | **yes** (new) | 3 × network | 600 s idle |
+| 6 | `installNWS` | Installing New World Scheduler | **4** | no | none (manual only) | 1200 s |
 
 Weights are static defaults. The ETA calculation (§7.3) rescales them from observed cost, so a slow network does not make the bar lie for the whole run.
 
-**Weights are data, not logic.** Because the cold-machine calibration (§13.4) is deferred, the numbers above will need correcting later on evidence this project does not yet have. No code path may hardcode a weight: they live in one declarative table, and that table is resolved at startup as
+**Weights are data, not logic.** They are a measurement of one machine on one connection (§3.3), so they will need correcting again. No code path may hardcode a weight: they live in one declarative table, and that table is resolved at startup as
 
 ```
 UserDefaults "OpenXEStageWeights"  →  built-in defaults
 ```
 
-The override is a dictionary of stage id to integer weight. It is accepted only if it names every stage exactly once, every value is positive, and the values sum to 100; an override failing any of those is ignored and the rejection logged, so a bad edit degrades to the shipped defaults rather than a broken bar. This makes a calibration run correctable with `defaults write dev.openxe.OpenXE OpenXEStageWeights …` and no rebuild — which matters for an ad-hoc-signed app where editing a bundled resource would invalidate the signature.
+The override is a dictionary of stage id to integer weight. It is accepted only if it names every stage exactly once, every value is positive, and the values sum to 100; an override failing any of those is ignored and the rejection logged, so a bad edit degrades to the shipped defaults rather than a broken bar. This makes a recalibration correctable with `defaults write dev.openxe.OpenXE OpenXEStageWeights …` and no rebuild — which matters for an ad-hoc-signed app where editing a bundled resource would invalidate the signature, and it is the escape hatch for a user whose connection is nothing like the one §3.3 measured.
 
 The same applies to the stage-4 sub-step weights (§5.1) and to the two constants the spikes produced (`expectedArchiveEntries`, the stall threshold): each is a named value in one place, never an inline literal at a use site.
 
@@ -435,9 +461,9 @@ On `.recovered` it reverts to the normal layout without ceremony.
 
 ### 7.3 ETA
 
-`remaining = (Σ weights of incomplete stages) × secondsPerWeightUnit`, where `secondsPerWeightUnit` starts at the reference `241 / 100 = 2.41 s` and is recalibrated after each completed stage from that stage's actual elapsed time against its weight. Within a byte-bounded stage, the in-stage remainder uses observed throughput rather than the weight.
+`remaining = (Σ weights of incomplete stages) × secondsPerWeightUnit`, where `secondsPerWeightUnit` starts at the reference `464.8 / 100 = 4.648 s` (§3.3) and is recalibrated after each completed stage from that stage's actual elapsed time against its weight. Within a byte-bounded stage, the in-stage remainder uses observed throughput rather than the weight.
 
-**Every reference figure came from a warm Apple Silicon Mac (§3.1). On slower hardware, or on a first run paying Rosetta AOT translation, the initial estimate will read optimistic** — and the population most affected is exactly the one most likely to conclude the installer has hung. Two rules keep a confidently wrong number off the screen.
+**The reference run was network-bound at ~4.9 Mbit/s (§3.3), so the initial estimate is wrong on any materially different connection — and now it errs long, not short.** On a fast link the download stages finish well inside their 84 % of the budget and the first estimate reads pessimistic; on slower hardware with the same link, the Rosetta-paying stages read optimistic. Either way the first number is a guess about someone else's machine. Two rules keep a confidently wrong number off the screen.
 
 **Rule A — suppression before data.** No remaining-time estimate is shown until at least one stage has completed *or* 15 s of download throughput has been observed, whichever comes first. Until then the line reads only elapsed time. An early ETA computed from nothing is worse than no ETA.
 
@@ -445,7 +471,7 @@ On `.recovered` it reverts to the normal layout without ceremony.
 
 > `4 min 20 sec elapsed · still working — this can take longer on some Macs`
 
-The estimate returns once the stage completes and recalibration has absorbed the real duration; subsequent stages then benefit from a `secondsPerWeightUnit` that reflects this machine rather than the reference one. Rule B is what makes the warm-machine defaults safe to ship: on hardware where the weights are wrong, the ETA withdraws itself rather than counting down to a number it cannot meet.
+The estimate returns once the stage completes and recalibration has absorbed the real duration; subsequent stages then benefit from a `secondsPerWeightUnit` that reflects this machine and this link rather than the reference ones. Rule B is what makes a single-machine, single-link calibration safe to ship: where the weights are wrong, the ETA withdraws itself rather than counting down to a number it cannot meet.
 
 Displayed granularity is coarse on purpose: "less than a minute", then whole minutes. A counter ticking second-by-second invites the user to watch it and distrust it.
 
@@ -633,23 +659,25 @@ One constant, three sites: `WizardWindow.swift:256`, `AppDelegate.swift:79`, `Pr
 
 ## 11. Risks and open questions
 
-**R1 — RESOLVED as a material risk.** Stage 4 is the one stage that cannot resume, so quitting near its end discards the whole of it. The original draft put that at 46 % of the run and ~3 minutes of lost work, which made the settled resume-granularity decision look costly. Two rounds of measurement and one optimisation reduced it to **12 % and ~29 s**: first by measuring the stage honestly (§3.1), then by batching the font writes (§5.3). Roughly half a minute of lost work is a small enough cost that the atomic-prefix decision now carries essentially no UX debt, and the confirm sheet can state it without apology.
+**R1 — RESOLVED as a material risk.** Stage 4 is the one stage that cannot resume, so quitting near its end discards the whole of it. The original draft put that at 46 % of the run and ~3 minutes of lost work, which made the settled resume-granularity decision look costly. Two rounds of measurement and one optimisation reduced it to **~29 s** of work: first by measuring the stage honestly (§3.1), then by batching the font writes (§5.3). The cold run (§3.3) put it at 37.5 s and **8 %** of the bar. Roughly half a minute of lost work is a small enough cost that the atomic-prefix decision now carries essentially no UX debt, and the confirm sheet can state it without apology.
 
-**R2 — ETA will sometimes be visibly wrong.** Static weights assume a reference network. On a 5 Mbit link stage 2 alone can exceed the whole reference run, inverting the weighting until recalibration kicks in after stage 2 completes. §7.3's suppression rule and coarse granularity reduce the damage but do not remove it. A visibly wrong estimate erodes trust in the whole panel — the exact problem this work exists to fix. Accepted with mitigation; worth revisiting if testing shows it misleads.
+**R2 — ETA will sometimes be visibly wrong; the direction has now flipped.** Static weights encode a reference network, and after §3.3 that reference *is* a ~4.9 Mbit link where stage 2 alone is 67 % of the run. The failure mode is no longer "slow link inverts the weighting" — it is the mirror: on a fast link stage 2 finishes in a fraction of its budgeted share, the bar leaps forward, and the first estimate reads pessimistic until recalibration lands after stage 2. §7.3's suppression rules and coarse granularity reduce the damage but do not remove it. A visibly wrong estimate erodes trust in the whole panel — the exact problem this work exists to fix. Accepted with mitigation; worth revisiting if testing shows it misleads. **A second calibration on a materially faster connection is the cheapest thing that would resolve it** — two runs bracket the range, one does not.
 
 **R3 — RESOLVED by spike, 2026-08-08.** Was: "the `wineboot` heartbeat is unproven, the single largest unknown in the spec." Measurement (§3.1) found a working signal: **output ∪ 1 Hz prefix filesystem growth, worst gap 4.47 s** against a 10 s criterion, with `WINEDEBUG` left untouched. `+loaddll` was tested and rejected as no better than the free option. The residual risk is only that both figures come from a fast M2 with a warm Rosetta cache — see R2a.
 
 **R3a — RESOLVED by adding a second, independent signal to 4a.** Batching the fonts had left stage 4 with a single progress mechanism where it previously had two: the heartbeat covering 82 % of the stage alone, with the 57-step counter reduced to a 1.5 s blip. §5.1 now adds a coarse determinate bar driven by prefix file count against the ~2,027 a completed boot produces — advisory, clamped and monotonic, sharing the 1 Hz poll the liveness signal already needs. Stage 4 is back to two independent mechanisms answering different questions ("how far" and "still alive"), so degradation of either is no longer a single point of failure. The cold calibration run (§13.4) should still confirm the max inter-event gap during 4a clears the 10 s criterion on slower hardware.
 
-**R2a — ACCEPTED with mitigation: shipping on warm-machine defaults.** Stages 2 (download, network-dependent) and 3 (unpack) were never measured; stage 4's figure came from a machine that had already Rosetta-translated the engine. On a cold, slower Mac all three grow, and not by the same factor — so the *ratios* driving the bar may shift even though each absolute figure is a floor. **The practical consequence is that the initial ETA reads optimistic on exactly the hardware most likely to conclude the installer has hung.**
+**R2a — PARTIALLY RESOLVED by the 2026-08-09 calibration (§3.3); the residue is bandwidth, not hardware.** Was: stages 2 and 3 were never measured and stage 4 came from a warm-Rosetta machine, so the ratios driving the bar were guesswork. All six stages are now measured on a real end-to-end run, which removes the estimate-versus-measurement gap entirely.
 
-Cold calibration is deliberately deferred (no suitable machine available), so three things carry the risk instead:
+What replaces it is narrower but not smaller: **the weights are substantially a snapshot of one connection.** The two download stages took 84 % of the calibration run at ~4.9 Mbit/s. A user on 100 Mbit sees a completely different shape, and the built-in weights would misdescribe their run as badly as the old guesses misdescribed this one. Rosetta also remains uncontrolled (runbook §2), so stages 4 and 6 are still floors.
 
-1. **§7.3 Rule B** withdraws the numeric estimate as soon as the in-flight stage overshoots its expectation by 1.5×, rather than counting down to a number it cannot meet. This is the primary mitigation and it is what makes the warm defaults safe to ship.
+Three things carry the residual risk:
+
+1. **§7.3 Rule B** withdraws the numeric estimate as soon as the in-flight stage overshoots its expectation by 1.5×, rather than counting down to a number it cannot meet. This is the primary mitigation and it is what makes a one-link calibration safe to ship.
 2. **§7.3 recalibration** means only the first stage of the first run uses reference numbers; everything after uses this machine's observed pace.
 3. **§4.2 weights-as-data** means a later calibration is applied with `defaults write`, not a rebuild.
 
-Residual risk: a user on slow hardware sees an optimistic estimate for the duration of stage 2, then sees it withdraw. That is honest but not pleasant. Treat the weights as good defaults, not settled constants, until §13.4 runs.
+Residual risk: a user whose connection differs materially from the reference sees a wrong estimate through stage 2, then sees it correct or withdraw. That is honest but not pleasant. Treat the weights as a measured default, not a constant.
 
 **R4 — Stall-watchdog false positives.** 60 s of silence is a heuristic. A slow Mac doing genuine work during Mono installation could trip it. The design deliberately makes `stalled` non-terminal and "Keep Waiting" cheap (it resets the detector and doubles the threshold to 120 s), so a false positive costs one click, not a failed setup.
 
@@ -718,7 +746,7 @@ Plus: `make fresh` end-to-end with the notification path exercised; ⌘Q during 
 
 ### 13.4 Cold-machine weight calibration
 
-**Status: deferred by decision — the project is shipping on warm-machine defaults (R2a).** This section is kept as a runnable procedure for whenever a suitable machine is available.
+**Status: partially run, 2026-08-09.** A full instrumented run on this Mac produced all six stage durations and they are now the shipped weights (§3.3, §4.2). It was **not** a genuinely cold run: Rosetta's AOT cache cannot be cleared here (runbook §2), so condition (a) for removing `useBatchedImport` remains unmet and stages 4 and 6 remain floors. This section stays a runnable procedure — for a true no-AOT-cache machine, and for the faster-connection run R2 asks for.
 
 **Tooling status, corrected 2026-08-09.** The claim "it needs no new tooling: `SetupLog` already records per-stage elapsed times" was false when written: `SetupLog` shipped as a type with no production caller, so a run produced no `setup.log` at all. It is true now, but only because the existing setup path was explicitly instrumented — see `docs/design/specs/2026-08-09-setup-log-instrumentation-design.md`, which adds two methods to `SetupLog` and no new types. Reaching the same timings via `SetupCoordinator` would have required Tasks 8, 9, 14, 15 and 17–18, i.e. the plan's whole back half, which is what the calibration gate sits in front of. `SetupCoordinator` is **Task 14**; Task 8 is `SetupJournal`.
 
@@ -729,17 +757,19 @@ Two limits survive that change and belong in any write-up: retry/resume decision
 - Run `make fresh` on a Mac that has **never** run the engine (no Rosetta AOT cache), on a representative connection, and record all six stage durations from `setup.log`.
 - Recompute the weights from those durations. Apply them with `defaults write dev.openxe.OpenXE OpenXEStageWeights …` (§4.2) to confirm they behave, then fold them into the built-in defaults.
 - The developer's own Mac cannot serve: its Rosetta cache is warm and cannot be selectively cleared.
-- The measured ~29 s stage-4 figure is a lower bound to sanity-check against — a cold run below it means the run was not actually cold.
+- **Record the connection speed.** The 2026-08-09 run (§3.3) proved the weights are as much a property of the link as of the machine; a duration set without a bandwidth figure beside it cannot be compared to the last one.
+- The measured ~29 s stage-4 figure is a lower bound to sanity-check against — a cold run below it means the run was not actually cold. The 2026-08-09 warm-Rosetta run gave 37.5 s.
 
-**Calibration outputs to capture while there.** Each of these is currently a warm-machine value and this is the only occasion to check them:
+**Calibration outputs to capture while there.**
 
 | Constant | Current | What to check |
 |---|---|---|
-| Stage weights (§4.2) | 1 / 37 / 25 / 12 / 10 / 15 | Recompute from the six durations |
+| Stage weights (§4.2) | 1 / 67 / 3 / 8 / 17 / 4 — measured 2026-08-09 (§3.3) | Recompute from the six durations. Expect a very different split on a faster link; record the link speed alongside |
+| `expectedPrefixEntries` (§5.1) | 2027 — confirmed 2026-08-09 | Plateau measured 2030 twice, with 2026 and 2029 adjacent; 2027 sits inside the tail band, so it is kept |
 | Stall threshold (§7.2) | 60 s | Longest *legitimate* inter-event gap; 60 s must stay comfortably above it |
 | Max inter-event gap in 4a (§11 R3a) | 4.47 s warm | Must still clear the 10 s criterion (§14.1) |
 | `expectedArchiveEntries` (§5.2) | measured from the pinned archive | Unchanged unless the engine is repinned |
-| `useBatchedImport` (§5.3) | `true` | This run is condition (a) of two for deleting the flag |
+| `useBatchedImport` (§5.3) | `true` | Condition (a) of two for deleting the flag — **still unmet**, the 2026-08-09 run had a warm AOT cache |
 
 ---
 

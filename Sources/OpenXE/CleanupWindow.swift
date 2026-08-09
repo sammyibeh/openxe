@@ -196,6 +196,9 @@ final class CleanupWindowController: NSObject, NSWindowDelegate {
 
         let paths = self.paths
         let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        // Handed over as-is: under App Translocation this is a randomized
+        // read-only mount, and `CleanupRunner.live` resolves it to the installed
+        // bundle before anything is told about it. The Shell holds no path logic.
         let bundleURL = Bundle.main.bundleURL
         Task {
             let result = await Task.detached { () -> Result<CleanupOutcome, Error> in

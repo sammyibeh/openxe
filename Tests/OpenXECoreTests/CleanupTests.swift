@@ -156,9 +156,11 @@ final class CleanupTests: XCTestCase {
                        realDocuments: documents, planner: planner)
     }
 
-    private func makeRunner(_ f: Fixture,
-                            shutdown: @escaping @Sendable () -> Void = {},
-                            unregister: @escaping @Sendable () -> Void = {}) -> CleanupRunner {
+    private func makeRunner(
+        _ f: Fixture,
+        shutdown: @escaping @Sendable () -> Void = {},
+        unregister: @escaping @Sendable () -> LaunchServicesUnregistration = { .noBundle }
+    ) -> CleanupRunner {
         CleanupRunner(planner: f.planner, paths: f.paths, home: f.home, sandbox: f.sandbox,
                       shutdownWineserver: shutdown, unregisterFromLaunchServices: unregister)
     }
@@ -693,10 +695,14 @@ final class CleanupTests: XCTestCase {
         let f = try makeFixture()
         final class Box: @unchecked Sendable { var calls = 0 }
         let box = Box()
-        _ = try makeRunner(f, unregister: { box.calls += 1 })
-            .run(plan: f.planner.plan(), keepNWSData: false,
-                 documentsDirectory: f.documents, now: Date())
+        let outcome = try makeRunner(f, unregister: {
+            box.calls += 1
+            return .unregistered(path: "/Applications/OpenXE.app")
+        }).run(plan: f.planner.plan(), keepNWSData: false,
+               documentsDirectory: f.documents, now: Date())
         XCTAssertEqual(box.calls, 1)
+        XCTAssertEqual(outcome.unregistration, .unregistered(path: "/Applications/OpenXE.app"),
+                       "the outcome must carry what actually happened to the registration")
     }
 
     func testOutcomeReportsWhatWasRemovedAndReclaimed() throws {

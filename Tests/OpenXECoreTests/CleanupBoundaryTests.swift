@@ -37,7 +37,10 @@ final class CleanupBoundaryTests: XCTestCase {
         let runner = CleanupRunner(
             planner: planner, paths: planner.paths, home: home, sandbox: nil,
             shutdownWineserver: { XCTFail("must not shut down the real wineserver") },
-            unregisterFromLaunchServices: { XCTFail("must not touch LaunchServices") })
+            unregisterFromLaunchServices: {
+                XCTFail("must not touch LaunchServices")
+                return .noBundle
+            })
 
         XCTAssertThrowsError(
             try runner.run(plan: planner.plan(), keepNWSData: true,
@@ -58,7 +61,10 @@ final class CleanupBoundaryTests: XCTestCase {
         let runner = CleanupRunner(
             planner: planner, paths: planner.paths, home: home, sandbox: fakeSandbox,
             shutdownWineserver: { XCTFail("must not shut down the real wineserver") },
-            unregisterFromLaunchServices: { XCTFail("must not touch LaunchServices") })
+            unregisterFromLaunchServices: {
+                XCTFail("must not touch LaunchServices")
+                return .noBundle
+            })
 
         XCTAssertThrowsError(
             try runner.run(plan: planner.plan(), keepNWSData: true,

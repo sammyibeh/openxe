@@ -411,6 +411,65 @@ public enum CleanupError: Error, LocalizedError {
     }
 }
 
+// MARK: - LaunchServices
+
+/// What the `lsregister -u` step did, and to which path.
+///
+/// Removal's last act is to stop OpenXE being the handler for `.exe` files. That
+/// is a path-addressed operation, and under App Translocation the path
+/// `Bundle.main` reports is not the installed bundle — so this decision is made
+/// from a resolved `BundleLocation`, in a pure function, and reported back to the
+/// runner so it lands in the log.
+public enum LaunchServicesUnregistration: Sendable, Equatable {
+    case unregistered(path: String)
+    /// Unregistered the installed copy while running translocated.
+    case unregisteredAfterTranslocation(real: String, translocated: String)
+    /// Running translocated with no resolvable original: unregistering the
+    /// translocated path would leave the installed copy registered *and* look
+    /// like success, so nothing is attempted.
+    case refusedUnresolvedTranslocation(translocated: String)
+    case noBundle
+
+    /// The path `lsregister -u` should be given, or nil when it must not run.
+    public var pathToUnregister: String? {
+        switch self {
+        case .unregistered(let path): return path
+        case .unregisteredAfterTranslocation(let real, _): return real
+        case .refusedUnresolvedTranslocation, .noBundle: return nil
+        }
+    }
+
+    public static func decide(for location: BundleLocation?) -> LaunchServicesUnregistration {
+        switch location {
+        case .none:
+            return .noBundle
+        case .real(let url):
+            return .unregistered(path: url.path)
+        case .translocated(let real, let translocated):
+            return .unregisteredAfterTranslocation(real: real.path,
+                                                   translocated: translocated.path)
+        case .unresolvedTranslocation(let translocated):
+            return .refusedUnresolvedTranslocation(translocated: translocated.path)
+        }
+    }
+
+    /// One line for setup.log. Diagnostic, not user-facing copy.
+    public var logLine: String {
+        switch self {
+        case .unregistered(let path):
+            return "unregistered the .exe handler: \(path)"
+        case .unregisteredAfterTranslocation(let real, let translocated):
+            return "unregistered the .exe handler: \(real) "
+                 + "(running translocated from \(translocated))"
+        case .refusedUnresolvedTranslocation(let translocated):
+            return "DID NOT unregister the .exe handler: running translocated from "
+                 + "\(translocated) and the installed bundle path could not be resolved"
+        case .noBundle:
+            return "DID NOT unregister the .exe handler: no bundle path was supplied"
+        }
+    }
+}
+
 // MARK: - Runner
 
 public struct CleanupOutcome: Sendable {
@@ -421,6 +480,7 @@ public struct CleanupOutcome: Sendable {
     public let reclaimedBytes: Int64
     public let preserved: PreservedData?
     public let launchersRemoved: Int
+    public let unregistration: LaunchServicesUnregistration
 }
 
 /// Executes a `CleanupPlan`. Spec §6.
@@ -438,12 +498,14 @@ public struct CleanupRunner: Sendable {
     /// Injected so tests never shell out. Production passes a closure that
     /// terminates the real wineserver.
     let shutdownWineserver: @Sendable () -> Void
-    /// Injected for the same reason; production unregisters the app bundle.
-    let unregisterFromLaunchServices: @Sendable () -> Void
+    /// Injected for the same reason; production unregisters the app bundle. It
+    /// reports what it did so the runner — which owns the log — can record it.
+    let unregisterFromLaunchServices: @Sendable () -> LaunchServicesUnregistration
 
     public init(planner: CleanupPlanner, paths: OpenXEPaths, home: URL, sandbox: URL?,
                 shutdownWineserver: @escaping @Sendable () -> Void,
-                unregisterFromLaunchServices: @escaping @Sendable () -> Void) {
+                unregisterFromLaunchServices: @escaping @Sendable ()
+                    -> LaunchServicesUnregistration) {
         self.planner = planner
         self.paths = paths
         self.home = home
@@ -515,10 +577,11 @@ public struct CleanupRunner: Sendable {
         }
 
         // 4. Drop the .exe handler registration.
-        unregisterFromLaunchServices()
+        let unregistration = unregisterFromLaunchServices()
 
         return CleanupOutcome(removed: removed, skipped: skipped, reclaimedBytes: reclaimed,
-                              preserved: preserved, launchersRemoved: launchersRemoved)
+                              preserved: preserved, launchersRemoved: launchersRemoved,
+                              unregistration: unregistration)
     }
 
     /// Copies the preserve set into a plainly-named folder in Documents, along
@@ -572,12 +635,18 @@ public struct CleanupRunner: Sendable {
     ///
     /// `sandbox` is nil here by design: this is the live configuration, and a
     /// test that reaches it is refused outright by `assertBoundary`.
-    public static func live(paths: OpenXEPaths, bundleURL: URL?) -> CleanupRunner {
+    public static func live(paths: OpenXEPaths, bundleURL: URL?,
+                            resolver: BundleLocationResolver = .system) -> CleanupRunner {
         let home = FileManager.default.homeDirectoryForCurrentUser
         let planner = CleanupPlanner.live(paths: paths)
         let prefix = paths.prefix
         let wineserver = paths.wineserverBinary
         let engineCurrent = paths.engineCurrent
+        // Resolved once, here, rather than trusting the caller's `Bundle.main`
+        // path: under App Translocation that path is a read-only copy on a
+        // randomized mount, and unregistering it leaves the installed bundle
+        // registered as the .exe handler.
+        let location = bundleURL.map { resolver.resolve($0) }
         return CleanupRunner(
             planner: planner, paths: paths, home: home, sandbox: nil,
             shutdownWineserver: {
@@ -590,10 +659,12 @@ public struct CleanupRunner: Sendable {
                 WineServerHousekeeping.reapAllServers(forPrefix: prefix)
             },
             unregisterFromLaunchServices: {
-                guard let bundleURL else { return }
+                let decision = LaunchServicesUnregistration.decide(for: location)
+                guard let path = decision.pathToUnregister else { return decision }
                 _ = try? Subprocess.run(
                     URL(fileURLWithPath: "/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/Support/lsregister"),
-                    arguments: ["-u", bundleURL.path], timeout: 60, captureOutput: false)
+                    arguments: ["-u", path], timeout: 60, captureOutput: false)
+                return decision
             })
     }
 

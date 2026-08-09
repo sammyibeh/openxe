@@ -917,6 +917,75 @@ final class CleanupTests: XCTestCase {
         XCTAssertFalse(outcome.removed.isEmpty)
     }
 
+    // MARK: the launcher folder
+    //
+    // The launchers were removed and "/Applications/OpenXE Apps" was left behind,
+    // empty — visible litter after a "remove everything". The folder is ours to
+    // remove; anything a user put in it is not.
+
+    func testTheLauncherFolderGoesWhenItHeldOnlyOurShortcuts() throws {
+        let f = try makeFixture()
+        let fm = FileManager.default
+        try fm.removeItem(at: f.launcherDir.appendingPathComponent("Someone Elses.app"))
+        // Finder writes one of these the moment the user opens the folder. If it
+        // counted as content the folder could never be removed.
+        try Data().write(to: f.launcherDir.appendingPathComponent(".DS_Store"))
+
+        let plan = f.planner.plan()
+        let folder = try XCTUnwrap(plan.targets.first { $0.url.path == f.launcherDir.path },
+                                   "the folder OpenXE made for its shortcuts is never planned")
+        XCTAssertEqual(folder.sizeBytes, 0,
+                       "the folder's bytes are already counted as launchers; counting them "
+                       + "again would overstate what the removal freed")
+        XCTAssertEqual(plan.launcherCount, 1, "the folder is not a launcher")
+
+        let outcome = try makeRunner(f).run(plan: plan, keepNWSData: false,
+                                            documentsDirectory: f.documents, now: Date())
+        XCTAssertTrue(outcome.skipped.isEmpty, "unexpected skips: \(outcome.skipped)")
+        XCTAssertEqual(outcome.launchersRemoved, 1)
+        XCTAssertFalse(fm.fileExists(atPath: f.launcherDir.path),
+                       "the launcher folder was left behind, empty")
+        XCTAssertTrue(fm.fileExists(atPath: f.home.appendingPathComponent("Applications").path),
+                      "only OpenXE's own folder goes — not the folder it sits in")
+    }
+
+    func testTheLauncherFolderStaysWhenSomeoneElsesAppIsInIt() throws {
+        let f = try makeFixture()   // the fixture parks a foreign .app in there
+        let fm = FileManager.default
+        let foreign = f.launcherDir.appendingPathComponent("Someone Elses.app")
+
+        let plan = f.planner.plan()
+        XCTAssertFalse(plan.targets.contains { $0.url.path == f.launcherDir.path },
+                       "a folder holding somebody else's app was planned for removal")
+
+        _ = try makeRunner(f).run(plan: plan, keepNWSData: false,
+                                  documentsDirectory: f.documents, now: Date())
+        XCTAssertTrue(fm.fileExists(atPath: foreign.path))
+        XCTAssertTrue(fm.fileExists(atPath: f.launcherDir.path))
+    }
+
+    /// Not only apps: a file or a folder parked in there is somebody's too.
+    func testTheLauncherFolderStaysWhenAnythingElseIsParkedInIt() throws {
+        for stray in ["licence.txt", "My Stuff"] {
+            let f = try makeFixture()
+            let fm = FileManager.default
+            try fm.removeItem(at: f.launcherDir.appendingPathComponent("Someone Elses.app"))
+            let parked = f.launcherDir.appendingPathComponent(stray)
+            if stray.contains(".") {
+                try Data("keep me".utf8).write(to: parked)
+            } else {
+                try fm.createDirectory(at: parked, withIntermediateDirectories: true)
+            }
+
+            let plan = f.planner.plan()
+            XCTAssertFalse(plan.targets.contains { $0.url.path == f.launcherDir.path },
+                           "the folder was planned for removal with \(stray) sitting in it")
+            _ = try makeRunner(f).run(plan: plan, keepNWSData: false,
+                                      documentsDirectory: f.documents, now: Date())
+            XCTAssertTrue(fm.fileExists(atPath: parked.path), "\(stray) was deleted")
+        }
+    }
+
     // MARK: copy
 
     func testRemovalCopyIsDistinctFromResetCopy() {

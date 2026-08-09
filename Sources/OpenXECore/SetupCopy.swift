@@ -143,6 +143,11 @@ public enum SetupCopy {
         "The \"\(name)\" shortcut OpenXE created"
     }
 
+    /// The container the shortcuts lived in. Listed separately because it is
+    /// removed separately — and only when nothing but OpenXE's own shortcuts was
+    /// ever in it.
+    public static let cleanupItemLauncherFolder = "The folder OpenXE made for those shortcuts"
+
     /// The keep/delete choice. Off by default: the safe answer is the default.
     public static let cleanupKeepDataCheckbox =
         "Also delete my New World Scheduler information"

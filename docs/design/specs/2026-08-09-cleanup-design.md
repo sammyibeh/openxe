@@ -54,7 +54,12 @@ write path in `Sources/`.
 
 Everything in the first row is under `paths.root`, so one `removeItem` covers it. The
 launcher directories are *not* ours wholesale — only bundles carrying the
-`OpenXETargetPath` marker are, per `LauncherManager`.
+`OpenXETargetPath` marker are, per `LauncherManager`. The container directory itself is
+removed only when every entry in it is one of those bundles (Finder's `.DS_Store`
+excepted); one foreign file, folder or app and the directory stays. Removing it when it
+is ours avoids leaving an empty `OpenXE Apps` folder behind after a "remove everything";
+never removing it otherwise is the stronger rule, because a user may have parked their
+own app in there.
 
 LaunchServices: the `.exe` handler registration is a property of the app bundle, not a
 separate file. `lsregister -u <bundle>` drops it; dragging the bundle to the Trash drops

@@ -817,6 +817,41 @@ final class CleanupTests: XCTestCase {
         XCTAssertTrue(text.contains(CleanupRunner.logEndBanner))
     }
 
+    /// The transcript is replayed into a log the removal had to re-create. It has
+    /// to arrive carrying the instants the lines were said at: a real 2.7-second
+    /// removal replayed twenty lines all reading `19:46:57`, and per-step timing
+    /// is precisely what is wanted when a large delete stalls.
+    ///
+    /// The stamps are second-resolution, so the test buys a real gap by making
+    /// the shutdown step slow rather than by hoping the run is.
+    func testTheReplayKeepsEachLinesOwnTimestamp() throws {
+        let f = try makeFixture()
+        let url = logURL(f)
+        _ = try makeRunner(f, log: try SetupLog(url: url),
+                           shutdown: { Thread.sleep(forTimeInterval: 1.2) })
+            .run(plan: f.planner.plan(), keepNWSData: false,
+                 documentsDirectory: f.documents, now: Date())
+
+        // The original file was unlinked with its directory, so everything here
+        // is the replay plus what followed it.
+        let text = try String(contentsOf: url, encoding: .utf8)
+        func stamp(ofLineContaining needle: String) throws -> String {
+            let line = try XCTUnwrap(text.split(separator: "\n").first { $0.contains(needle) },
+                                     "no line containing \(needle)")
+            return String(line.prefix(while: { $0 != " " }))
+        }
+        let begin = try stamp(ofLineContaining: CleanupRunner.logBeginBanner)
+        let stopped = try stamp(ofLineContaining: "stopped the Windows environment")
+        let recreated = try stamp(ofLineContaining: "re-created here")
+
+        XCTAssertNotEqual(begin, stopped,
+                          "the replay restamped every line with a single instant (\(begin))")
+        // ISO 8601 in UTC sorts lexicographically, so this is a real ordering.
+        XCTAssertLessThan(begin, stopped)
+        XCTAssertLessThan(begin, recreated,
+                          "a replayed line must predate the note that introduces the replay")
+    }
+
     func testAnAbortedCleanupSaysWhatStoppedItAndThatNothingWasRemoved() throws {
         let f = try makeFixture()
         let url = logURL(f)

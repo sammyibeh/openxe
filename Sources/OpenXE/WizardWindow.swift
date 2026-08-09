@@ -358,11 +358,14 @@ final class WizardWindowController: NSObject, NSWindowDelegate {
                     Task { @MainActor [weak self] in self?.applyEngineProgress(update) }
                 }
                 await MainActor.run {
-                    self.setProgress(-1)
+                    self.prefixTracker = PrefixProgressTracker()
+                    self.setProgress(0)
                     self.setStatus("Finishing the Windows environment (first time only)…")
                 }
                 try await Task.detached(priority: .userInitiated) {
-                    try prefixManager.ensurePrefix(log: log)
+                    try prefixManager.ensurePrefix(log: log) { update in
+                        Task { @MainActor [weak self] in self?.applyPrefixProgress(update) }
+                    }
                 }.value
                 self.setBusy(false)
                 self.setStatus("Windows environment ready.")
@@ -373,6 +376,15 @@ final class WizardWindowController: NSObject, NSWindowDelegate {
                 self.setStatus(error.localizedDescription, isError: true)
             }
         }
+    }
+
+    /// Stage 4 has a real, measured fraction for every sub-step, so the bar is
+    /// determinate throughout. The tracker holds the never-rewind guarantee.
+    private var prefixTracker = PrefixProgressTracker()
+
+    private func applyPrefixProgress(_ update: PrefixProgress) {
+        if let position = prefixTracker.position(for: update) { setProgress(position) }
+        setStatus(PrefixProgressTracker.detail(for: update))
     }
 
     private func applyEngineProgress(_ update: EngineProgress) {

@@ -61,6 +61,35 @@ public enum PrefixProgress: Sendable {
     }
 }
 
+/// Turns the stage-4 event stream into a bar position that never rewinds.
+///
+/// `PrefixProgress` puts that guarantee on the caller by design: the boot
+/// poller's file count is advisory and sub-steps each report their own 0...1,
+/// so a transient dip must not drag the bar backwards. Lives here rather than
+/// in the window controller so it is covered by tests — the surface should
+/// hold no logic worth testing.
+public struct PrefixProgressTracker: Sendable {
+    private var highWater: Double = 0
+
+    public init() {}
+
+    /// The position to display, or nil when this event would move the bar
+    /// backwards and the caller should leave it where it is.
+    public mutating func position(for update: PrefixProgress) -> Double? {
+        guard case .step(let step, let inner, _) = update else { return nil }
+        let overall = PrefixProgress.fraction(at: step, within: inner)
+        guard overall > highWater else { return nil }
+        highWater = overall
+        return overall
+    }
+
+    /// The status text for an event. Always shown, even when the bar holds.
+    public static func detail(for update: PrefixProgress) -> String {
+        guard case .step(_, _, let detail) = update else { return "" }
+        return detail
+    }
+}
+
 public enum PrefixError: Error, LocalizedError {
     case bootFailed(status: Int32, detail: String)
     case monoOrGeckoMissing(String)
@@ -145,15 +174,18 @@ public final class PrefixManager: Sendable {
         // relied on the defer alone and so left the poller emitting .boot
         // events during sub-steps 4b-4g — visibly rewinding the bar.
         defer { bootProgress.stop() }
+        // No onLine here on purpose. It used to publish a hardcoded
+        // `fraction: 0.5` on every wineboot log line — fake movement that
+        // slammed 4a to its midpoint (≈41 % of stage 4) the instant Wine
+        // printed anything, then fought the poller for the rest of the boot.
+        // The poller is the better liveness signal anyway: if wineboot wedges,
+        // the prefix file count stops climbing and the bar visibly stalls,
+        // whereas fixme spam would have kept "proving" liveness. Subprocess
+        // tees to logHandle independently of onLine, so nothing is lost.
         let boot = try Subprocess.run(engine.activeWineBinary,
                                       arguments: ["wineboot", "--init"],
                                       environment: env, timeout: 900,
-                                      logHandle: log?.handle,
-                                      onLine: { line in
-                                          // Every line is a sign of life; the
-                                          // coordinator's stall detector reads these.
-                                          progress?(.step(.boot, fraction: 0.5, detail: line))
-                                      })
+                                      logHandle: log?.handle)
         bootProgress.stop()
         guard boot.status == 0 else {
             throw PrefixError.bootFailed(status: boot.status, detail: String(boot.output.suffix(400)))

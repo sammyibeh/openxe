@@ -110,4 +110,154 @@ public enum SetupCopy {
 
     public static let rosettaBlockedStatus =
         "OpenXE can't set up the Windows environment until Rosetta is installed."
+
+    // MARK: removal (spec 2026-08-09 §6)
+    //
+    // Deliberately worded to be unmistakable against "Reset Environment…".
+    // Reset keeps OpenXE working; this ends it. Every string here avoids
+    // filesystem paths, shell commands and the word "uninstall", which
+    // non-technical users read as jargon.
+
+    public static let cleanupMenuTitle = "Remove OpenXE from this Mac…"
+    public static let cleanupWindowTitle = "Remove OpenXE"
+
+    public static let cleanupHeadline = "Remove OpenXE from this Mac"
+
+    public static let cleanupExplanation =
+        "This removes the Windows environment OpenXE created, the programs installed "
+        + "inside it, and the settings OpenXE saved. It cannot be undone."
+
+    /// The distinction from Reset, said once, plainly.
+    public static let cleanupNotAReset =
+        "This is not the same as Reset Environment. Reset rebuilds the Windows "
+        + "environment so you can keep using OpenXE; this removes it for good."
+
+    public static let cleanupItemsHeading = "What will be removed"
+    public static let cleanupItemSupport = "The Windows environment and everything installed in it"
+    public static let cleanupItemLogs = "OpenXE's activity logs"
+    public static let cleanupItemPreferences = "OpenXE's own settings"
+    public static let cleanupItemCaches = "Temporary files OpenXE downloaded"
+    public static let cleanupItemWindowState = "Saved window positions"
+
+    public static func cleanupItemLauncher(_ name: String) -> String {
+        "The \"\(name)\" shortcut OpenXE created"
+    }
+
+    /// The keep/delete choice. Off by default: the safe answer is the default.
+    public static let cleanupKeepDataCheckbox =
+        "Also delete my New World Scheduler information"
+
+    public static let cleanupKeepDataDefaultNote =
+        "Your congregation information, schedules and licence will be copied to your "
+        + "Documents folder before anything is removed."
+
+    public static let cleanupDeleteDataWarning =
+        "Your congregation information, schedules and licence will be permanently "
+        + "deleted. Nothing will be copied out."
+
+    public static let cleanupConfirmButton = "Remove OpenXE"
+    public static let cleanupCancelButton = "Cancel"
+    public static let cleanupWorking = "Removing OpenXE…"
+
+    /// Sizes are stated with the same vocabulary everywhere.
+    public static func cleanupSpaceSummary(bytes: Int64) -> String {
+        "This frees about \(humanBytes(bytes)) of space."
+    }
+
+    public static func cleanupDataSummary(bytes: Int64) -> String {
+        "Your New World Scheduler information is about \(humanBytes(bytes))."
+    }
+
+    public static func cleanupSavedTo(_ folderName: String) -> String {
+        "Your New World Scheduler information was saved to \"\(folderName)\" in your "
+        + "Documents folder."
+    }
+
+    public static let cleanupShowSavedButton = "Show in Finder"
+
+    public static func cleanupDone(reclaimed: Int64) -> String {
+        "OpenXE has been removed. About \(humanBytes(reclaimed)) was freed."
+    }
+
+    /// The honest last step. A running app cannot delete its own bundle, and
+    /// pretending otherwise leaves the user with a mystery icon.
+    public static let cleanupDragToTrash =
+        "One last step: OpenXE itself is still in your Applications folder. Quit OpenXE, "
+        + "then drag it to the Trash to finish."
+
+    public static let cleanupQuitButton = "Quit OpenXE"
+
+    public static let cleanupPreserveFailed =
+        "OpenXE could not save a copy of your New World Scheduler information, so it "
+        + "stopped and removed nothing."
+
+    public static func cleanupPartial(_ problems: [String]) -> String {
+        "OpenXE removed what it could. These were left behind:\n• "
+            + problems.joined(separator: "\n• ")
+    }
+
+    /// Written into the saved folder. This is the one place the DPAPI caveat is
+    /// recorded for whoever finds the folder later — see the 2026-08-09 spec
+    /// §4.3: the licence file only decrypts under the same Windows user name.
+    public static func cleanupSavedReadme(items: [String], registryValue: String?) -> String {
+        var text = """
+        New World Scheduler information saved by OpenXE
+        ===============================================
+
+        This folder was created when OpenXE was removed from this Mac. It holds the
+        New World Scheduler information that was stored inside OpenXE's Windows
+        environment, which has now been deleted.
+
+        What is here:
+
+        """
+        for item in items {
+            switch item {
+            case "MyData":
+                text += "  MyData              - your congregation information and schedules\n"
+            case "Backups":
+                text += "  Backups             - New World Scheduler's own backup files\n"
+            case "Settings1.json":
+                text += "  Settings1.json      - your New World Scheduler settings\n"
+            case "RegistrationKey.json":
+                text += "  RegistrationKey.json - your New World Scheduler licence\n"
+            default:
+                text += "  \(item)\n"
+            }
+        }
+        if let registryValue {
+            text += """
+
+            Windows Registry Setting.reg
+                A setting the New World Scheduler installer put into the Windows
+                environment. Nothing else records it, so it is saved here too:
+
+                    \(NWSRegistryCapture.valueName) = \(registryValue)
+
+            """
+        }
+        text += """
+
+        If you install OpenXE and New World Scheduler again on this Mac, copying
+        MyData and Backups back into New World Scheduler's data folder restores your
+        information.
+
+        One thing to know about the settings and licence files: they were encrypted
+        by the Windows environment using your Mac account name. They will work again
+        on this Mac under the same account. If they are ever opened under a different
+        account name, they cannot be decrypted and New World Scheduler will need to be
+        registered again. Your congregation information in MyData is not affected by
+        this — it is not encrypted.
+
+        """
+        return text
+    }
+
+    /// Shared size vocabulary. MB below a gigabyte, one decimal above.
+    public static func humanBytes(_ bytes: Int64) -> String {
+        let mb = Double(bytes) / 1_048_576
+        if mb < 1 { return "less than 1 MB" }
+        if mb < 1024 { return String(format: "%.0f MB", mb) }
+        return String(format: "%.1f GB", mb / 1024)
+    }
 }

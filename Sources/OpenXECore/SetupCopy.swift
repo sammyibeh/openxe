@@ -190,6 +190,15 @@ public enum SetupCopy {
         "One last step: OpenXE itself is still in your Applications folder. Quit OpenXE, "
         + "then drag it to the Trash to finish."
 
+    /// The other half of the honest last step. macOS re-reads the file types an
+    /// installed app claims, so OpenXE keeps being offered for Windows programs
+    /// until the app is actually gone — no matter what removal asks it to do.
+    /// Saying so here is cheaper than the user discovering it by double-clicking
+    /// a program after a "remove everything" and watching OpenXE open.
+    public static let cleanupHandlerUntilTrashed =
+        "Until you do, macOS may still open Windows programs with OpenXE when you "
+        + "double-click them."
+
     public static let cleanupQuitButton = "Quit OpenXE"
 
     public static let cleanupPreserveFailed =

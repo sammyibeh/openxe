@@ -233,8 +233,11 @@ final class CleanupWindowController: NSObject, NSWindowDelegate {
             if !outcome.skipped.isEmpty {
                 lines.append(SetupCopy.cleanupPartial(outcome.skipped))
             }
-            // The honest last word: a running app cannot delete its own bundle.
-            lines.append(SetupCopy.cleanupDragToTrash)
+            // The honest last word: a running app cannot delete its own bundle,
+            // and while it is installed macOS keeps offering it for .exe files
+            // whatever the removal asked LaunchServices to do.
+            lines.append(SetupCopy.cleanupDragToTrash + " "
+                         + SetupCopy.cleanupHandlerUntilTrashed)
 
             statusLabel.textColor = .labelColor
             statusLabel.stringValue = lines.joined(separator: "\n\n")

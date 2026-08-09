@@ -62,9 +62,15 @@ never removing it otherwise is the stronger rule, because a user may have parked
 own app in there.
 
 LaunchServices: the `.exe` handler registration is a property of the app bundle, not a
-separate file. `lsregister -u <bundle>` drops it; dragging the bundle to the Trash drops
-it too. We do both — the unregister first, so the handler is gone even if the user
-leaves the bundle in place.
+separate file — it is declared by `CFBundleDocumentTypes` inside the bundle. `lsregister
+-u <bundle>` drops it *for now*; LaunchServices rescans `/Applications`, re-reads the
+Info.plist and re-registers the bundle (observed four minutes after a real removal, still
+claiming `com.microsoft.windows-executable`). Dragging the bundle to the Trash is what
+actually drops the claim. We still run the unregister — it is cheap, and there is no
+user-level binding in `com.apple.launchservices.secure.plist` competing with it — but the
+log records it as a request that does not persist, and the user is told the claim lasts
+until the app itself is gone. Fighting the rescan is out of scope; the accurate report is
+the fix.
 
 ## 4. Preservation
 
@@ -183,10 +189,12 @@ The feature's whole value is that it deletes a lot. The invariants:
    out **before any deletion**. A failure here aborts the whole cleanup with nothing
    deleted.
 6. Targets are deleted, each allowlist-checked.
-7. The app unregisters itself from LaunchServices.
+7. The app asks LaunchServices to drop its `.exe` handler registration — best-effort;
+   see §3 for why it does not persist.
 8. The result panel states what was removed, how much was reclaimed, where the saved
-   data is (with a **Show in Finder** button), and that **OpenXE itself must be dragged
-   to the Trash** — a running app cannot delete its own bundle.
+   data is (with a **Show in Finder** button), that **OpenXE itself must be dragged
+   to the Trash** — a running app cannot delete its own bundle — and that until it is,
+   macOS may still open Windows programs with OpenXE.
 
 ## 7. Distinctness from Reset
 

@@ -18,16 +18,12 @@ import XCTest
 /// 3. The allowlist rejects the real user's folders even if a plan names them.
 final class CleanupBoundaryTests: XCTestCase {
 
+    /// The *production* wiring, aimed squarely at this Mac — not a stand-in.
+    /// Asserting against the real configuration is the point: a stand-in could
+    /// stay safe while the thing that ships drifts.
     private func liveSharpEdges() -> (planner: CleanupPlanner, home: URL) {
-        // Deliberately constructed the way a careless future test might: aimed
-        // squarely at the real machine. It must never be able to delete.
-        let home = FileManager.default.homeDirectoryForCurrentUser
-        let library = home.appendingPathComponent("Library")
-        let planner = CleanupPlanner(
-            paths: OpenXEPaths(root: library.appendingPathComponent("Application Support/OpenXE")),
-            home: home, library: library, bundleIdentifier: "dev.openxe.OpenXE",
-            launcherDirectories: LauncherManager.candidateDirectories)
-        return (planner, home)
+        (CleanupPlanner.live(paths: OpenXEPaths.standard),
+         FileManager.default.homeDirectoryForCurrentUser)
     }
 
     func testTheSuiteCanRecogniseItself() {

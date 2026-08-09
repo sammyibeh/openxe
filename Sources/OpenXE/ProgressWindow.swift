@@ -56,6 +56,8 @@ final class ProgressWindowController {
             setIndeterminate(message: "Verifying download…")
         case .extracting:
             setIndeterminate(message: "Unpacking the Windows environment (about 700 MB)…")
+        case .unpacking(let entries):
+            setIndeterminate(message: "Unpacking the Windows environment… \(entries) files")
         }
     }
 

@@ -346,6 +346,40 @@ public struct CleanupPlanner: Sendable {
         return found
     }
 
+    /// Finder litter that does not make a launcher folder "in use". A `.DS_Store`
+    /// appears the moment the user opens the folder, and counting it as content
+    /// would mean the folder can never be removed.
+    static let ignorableLauncherFolderEntries: Set<String> = [".DS_Store", ".localized"]
+
+    /// Launcher container directories that are OpenXE's to remove.
+    ///
+    /// Removing the launchers and leaving `/Applications/OpenXE Apps` behind,
+    /// empty, is visible litter after a "remove everything". Removing that folder
+    /// when it holds anything OpenXE did not put there would be far worse: a user
+    /// may have parked their own app in it. So the rule is exact — the directory
+    /// goes only if every entry in it is a launcher this cleanup is already
+    /// removing. One foreign file, folder or app and it stays.
+    public func removableLauncherDirectories() -> [URL] {
+        let fm = FileManager.default
+        let ours = Set(existingLauncherBundles().map(\.path))
+        var removable: [URL] = []
+        for dir in launcherDirectories {
+            // A symlink standing where the folder should be is not our folder,
+            // and deleting it would be deleting whatever someone pointed it at.
+            guard !CleanupSafety.isSymbolicLink(atPath: dir.path) else { continue }
+            var isDir: ObjCBool = false
+            guard fm.fileExists(atPath: dir.path, isDirectory: &isDir), isDir.boolValue
+            else { continue }
+            let names = (try? fm.contentsOfDirectory(atPath: dir.path)) ?? []
+            let holdsSomethingElse = names.contains { name in
+                if Self.ignorableLauncherFolderEntries.contains(name) { return false }
+                return !ours.contains(dir.appendingPathComponent(name, isDirectory: true).path)
+            }
+            if !holdsSomethingElse { removable.append(dir) }
+        }
+        return removable
+    }
+
     public func plan() -> CleanupPlan {
         let fm = FileManager.default
         var targets: [CleanupTarget] = []
@@ -369,6 +403,15 @@ public struct CleanupPlanner: Sendable {
                 url: bundle,
                 label: SetupCopy.cleanupItemLauncher(bundle.deletingPathExtension().lastPathComponent),
                 sizeBytes: CleanupSafety.size(of: bundle)))
+        }
+
+        // After the launchers, so the folder is empty by the time it is reached.
+        // Sized at zero deliberately: every byte inside it has already been
+        // counted as a launcher above, and sizing the folder would double the
+        // reclaim total the user is shown.
+        for dir in removableLauncherDirectories() {
+            targets.append(CleanupTarget(url: dir, label: SetupCopy.cleanupItemLauncherFolder,
+                                         sizeBytes: 0))
         }
 
         let dataDir = nwsDataDirectory()

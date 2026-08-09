@@ -329,12 +329,21 @@ public final class EngineManager: Sendable {
             request.setValue("bytes=\(existing)-", forHTTPHeaderField: "Range")
         }
 
-        let delegate = DownloadProgressDelegate(alreadyHave: existing, progress: progress)
-        let (tempURL, response) = try await URLSession.shared.download(for: request, delegate: delegate)
-
-        guard let http = response as? HTTPURLResponse else {
-            throw EngineError.downloadFailed("no HTTP response")
+        // ProgressiveDownload, not `URLSession.shared.download(for:delegate:)`:
+        // the async convenience delivers ZERO didWriteData callbacks, so the
+        // engine bar sat at its start position for the entire 314 s transfer.
+        // See ProgressiveDownload for the measurement.
+        let downloaded: DownloadedFile
+        do {
+            downloaded = try await ProgressiveDownload.fetch(request) { counts in
+                progress(.downloading(fraction: counts.fraction(resumedFrom: existing) ?? -1))
+            }
+        } catch let error as DownloadError {
+            throw EngineError.downloadFailed(error.errorDescription ?? "\(error)")
         }
+        let tempURL = downloaded.url
+        let http = downloaded.response
+
         switch http.statusCode {
         case 206: // server honored the range: append the remainder
             let dst = try FileHandle(forWritingTo: partial)
@@ -485,43 +494,8 @@ final class EntryCounter: @unchecked Sendable {
     }
 }
 
-/// URLSession download-progress bridge for the engine archive fetch.
-///
-/// MUST conform to `URLSessionDownloadDelegate`, not merely
-/// `URLSessionTaskDelegate`. `didWriteData` is a *download*-delegate
-/// requirement; under SE-0160 a Swift method only becomes `@objc` when it
-/// satisfies a requirement of an adopted `@objc` protocol. Declare the
-/// task-only conformance and the method stays invisible to the Objective-C
-/// runtime, `respondsToSelector:` returns false, URLSession never calls it,
-/// and the bar sits at 0 for the whole transfer — with no compiler diagnostic
-/// anywhere. `ProgressDelegateTests` pins the runtime visibility.
-///
-/// Internal rather than private so that test can reach it.
-final class DownloadProgressDelegate: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
-    private let alreadyHave: Int64
-    private let progress: @Sendable (EngineProgress) -> Void
-
-    init(alreadyHave: Int64, progress: @escaping @Sendable (EngineProgress) -> Void) {
-        self.alreadyHave = alreadyHave
-        self.progress = progress
-    }
-
-    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask,
-                    didWriteData bytesWritten: Int64, totalBytesWritten: Int64,
-                    totalBytesExpectedToWrite: Int64) {
-        guard totalBytesExpectedToWrite > 0 else {
-            progress(.downloading(fraction: -1))
-            return
-        }
-        let done = Double(alreadyHave + totalBytesWritten)
-        let total = Double(alreadyHave + totalBytesExpectedToWrite)
-        progress(.downloading(fraction: done / total))
-    }
-
-    /// Required by the protocol; never invoked. `URLSession.download(for:delegate:)`
-    /// is completion-handler-backed, so the session hands the file to the
-    /// awaiting caller instead of calling this. Its only job is to make the
-    /// download-delegate conformance — and therefore `didWriteData` — legal.
-    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask,
-                    didFinishDownloadingTo location: URL) {}
-}
+// The engine download's URLSession delegate now lives in ProgressiveDownload,
+// together with the fraction arithmetic (`TransferCounts`). The old
+// `DownloadProgressDelegate` was correct in isolation and never called: it was
+// handed to `URLSession.download(for:delegate:)`, which does not deliver
+// incremental callbacks to it on any session.

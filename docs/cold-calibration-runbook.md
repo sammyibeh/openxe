@@ -15,6 +15,7 @@ Read §1 and §2 before touching anything.
 |---|---|
 | Written | 2026-08-09, on branch `setup-resilience` |
 | Revised | 2026-08-09 — `setup.log` is now written by the real path; §4 and §6 rewritten |
+| **Run** | **2026-08-09 — completed. Results in §10; weights folded into `StageWeightTable.builtIn`** |
 | Engine in scope | `gcenx-stable-11.0_1` (the pinned `EngineCatalog.stock`) |
 | Windows profile in scope | `sammyibeh` |
 | Blocking caveat | This Mac cannot be made cold in the Rosetta sense — see §2 |
@@ -93,7 +94,8 @@ Consequence, stated plainly:
 | Question | Can this run answer it? |
 |---|---|
 | Stage weights on a genuinely cold machine | **No.** Every measurement here is still a floor. |
-| Stage weights on a warm-Rosetta, cold-OpenXE machine | Yes — better than the current numbers, which were taken mid-development. |
+| Stage weights on a warm-Rosetta, cold-OpenXE machine | Yes — better than the pre-run numbers, which were taken mid-development. |
+| Stage weights independent of *this connection* | **No.** The downloads dominate; see §10. |
 | `expectedPrefixEntries` | **Yes, fully.** Prefix file count has nothing to do with Rosetta. |
 | Longest legitimate inter-event gap / stall threshold | Partially — the measured value is a floor. 60 s must clear it with margin. |
 | `useBatchedImport` removal condition (a) | **No.** §13.4 condition (a) is specifically a no-AOT-cache run. It stays unmet. |
@@ -308,7 +310,7 @@ enumerator does not.
 |---|---|---|
 | Six stage durations | **§6.0 `setup.log`**; §6.1 marks as cross-check | `StageWeightTable.builtIn` — `Sources/OpenXECore/SetupStage.swift` |
 | Engine transfer vs SHA-256 split inside stage 2 | §6.0 `transferred in` / `verified in` notes | nothing yet — recorded so stage 2 stays decomposable |
-| Prefix entries at the moment `wineboot --init` returns, **before** Mono/Gecko/fonts/NWS | §6.2 `prefix_entries` at the plateau, located in time by the `preparePrefix` begin marker | `PrefixProgress.expectedPrefixEntries` — `Sources/OpenXECore/PrefixManager.swift:48`, currently `2027` |
+| Prefix entries at the moment `wineboot --init` returns, **before** Mono/Gecko/fonts/NWS | §6.2 `prefix_entries` at the plateau, located in time by the `preparePrefix` begin marker | `PrefixProgress.expectedPrefixEntries` — `Sources/OpenXECore/PrefixManager.swift:48`, `2027` — **confirmed unchanged, §10** |
 | Longest gap with no visible change | `setup.log` timestamps within stage 4; §6.2 plus human observation elsewhere | stall threshold (60 s), `PrefixProgress` 4a criterion |
 | Engine archive entries | unchanged unless repinned | `EngineManager.expectedArchiveEntries` = 5,333 |
 
@@ -330,18 +332,21 @@ wrong plateau.
 - Recomputed weights are integers summing to **exactly 100** — enforced by
   `testStageWeightsSumTo100` and `testResolvedWeightsAlwaysSumTo100`.
 - `expectedPrefixEntries` is a clear plateau, not a mid-slope sample. If it lands within
-  a few per cent of 2027, keep 2027 and record that it was confirmed.
+  a few per cent of 2027, keep 2027 and record that it was confirmed. (It did — §10.)
+- **The connection speed is recorded.** Without it the durations cannot be compared to
+  another run, because the downloads dominate the total (§10).
 - Every longest-gap observation stays **comfortably below 60 s**; anything above 10 s is
   a finding against acceptance criterion 1 and must be written up, not rounded away.
 - The run reached the end. **A failed run yields no weights** — a partial timing set is
   worse than the current numbers because it looks authoritative.
 
-Apply candidate weights without a rebuild before folding them into the source:
+Apply candidate weights without a rebuild before folding them into the source. Shown
+with the weights the 2026-08-09 run produced, which are now also the built-in defaults:
 
 ```sh
 defaults write dev.openxe.OpenXE OpenXEStageWeights \
-  -dict preflight 1 downloadEngine 37 unpackEngine 25 \
-        preparePrefix 12 downloadNWS 10 installNWS 15
+  -dict preflight 1 downloadEngine 67 unpackEngine 3 \
+        preparePrefix 8 downloadNWS 17 installNWS 4
 ```
 
 Invalid or non-summing overrides are logged and ignored in favour of the built-ins, so a
@@ -442,3 +447,58 @@ an inconvenience, never a loss. Work in this order.
      regardless of the state of our code.
 6. **Never** delete `~/OpenXE-NWS-Rescue-2026-08-09/` until the user has confirmed, in
    NWS, that their data is back.
+
+---
+
+## 10. Results — run of 2026-08-09
+
+Conditions: macOS 27 build 26A5388g, Apple Silicon, engine `gcenx-stable-11.0_1`,
+Windows profile `sammyibeh`. Warm-Rosetta, cold-OpenXE, per §2 — **not** a cold-machine
+run, so spec §13.4 is not closed and `useBatchedImport` condition (a) stays unmet.
+
+### 10.1 Stage durations and the weights they produce
+
+Total across the six stages: **464.8 s**.
+
+| Stage | Measured | Share | Weight | Was |
+|---|---|---|---|---|
+| `preflight` | 0.4 s | 0.09 % | **1** | 1 |
+| `downloadEngine` | 314.1 s | 67.58 % | **67** | 37 |
+| `unpackEngine` | 14.1 s | 3.03 % | **3** | 25 |
+| `preparePrefix` | 37.5 s | 8.07 % | **8** | 12 |
+| `downloadNWS` | 81.1 s | 17.45 % | **17** | 10 |
+| `installNWS` | 17.6 s | 3.79 % | **4** | 15 |
+
+Largest-remainder rounding, summing to exactly 100. `preflight`'s true share rounds to
+0, so it is floored to 1 to keep its segment from being zero-width, and that 1 comes off
+`downloadEngine`'s 68. Folded into `StageWeightTable.builtIn` with the provenance and
+the caveat below recorded in the comment above the table.
+
+Two pre-run guesses were badly wrong, and in opposite directions: `unpackEngine` was
+budgeted 25 % and took 3 %, while `downloadEngine` was budgeted 37 % and took 68 %.
+
+### 10.2 The caveat that travels with these numbers
+
+**Measured throughput: 618 KB/s on the NWS download, ~4.9 Mbit/s.** The engine stage
+averages ~590 KB/s over its 177 MB, and that average includes SHA-256 verification, so
+the two are consistent (derived figure, not separately timed).
+
+The consequence is that **this table is substantially a bandwidth snapshot of one link,
+not a machine constant.** The two download stages are 84 % of the run. On a fast
+connection that share collapses, and these weights would be wrong in the opposite
+direction — `downloadEngine` far too heavy, `preparePrefix` and `installNWS` far too
+light. One run does not bracket a range; a second calibration on a materially faster
+connection is the cheapest thing that would.
+
+### 10.3 `expectedPrefixEntries` — confirmed at 2027, unchanged
+
+The plateau read **2030** in two independent runs, with **2026** and **2029** in adjacent
+samples. 2027 sits inside that tail band, so the constant is kept rather than nudged
+three counts to chase sampling noise in a value that is advisory and clamped anyway.
+
+### 10.4 What this run did not answer
+
+- **Genuinely cold weights.** Rosetta's AOT cache is intact (§2); `preparePrefix` and
+  `installNWS` remain floors.
+- **`useBatchedImport` removal.** Condition (a) needs a no-AOT-cache machine. Unmet.
+- **Any connection but this one.** See §10.2 — the largest open question the run leaves.

@@ -19,6 +19,9 @@ final class WizardWindowController: NSObject, NSWindowDelegate {
     private let nws: NWSInstaller
     private let runner: Runner
     private let paths: OpenXEPaths
+    /// The run's setup narrative, owned by AppDelegate (instrumentation spec
+    /// §3.2). nil only if the log file could not be opened.
+    private let log: SetupLog?
     private let onClose: () -> Void
 
     // Shared chrome, reused across steps.
@@ -40,12 +43,14 @@ final class WizardWindowController: NSObject, NSWindowDelegate {
     private var versionPopup: NSPopUpButton?
 
     init(engine: EngineManager, prefixManager: PrefixManager, nws: NWSInstaller,
-         runner: Runner, paths: OpenXEPaths, onClose: @escaping () -> Void) {
+         runner: Runner, paths: OpenXEPaths, log: SetupLog?,
+         onClose: @escaping () -> Void) {
         self.engine = engine
         self.prefixManager = prefixManager
         self.nws = nws
         self.runner = runner
         self.paths = paths
+        self.log = log
         self.onClose = onClose
         window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 540, height: 440),
@@ -281,12 +286,16 @@ final class WizardWindowController: NSObject, NSWindowDelegate {
     private func rosettaGatePassed(gate: RosettaGate = .live()) async -> Bool {
         setBusy(true)
         setStatus(SetupCopy.rosettaChecking)
+        // Stage 1: the automated check only (instrumentation spec §3.3b).
+        let stage1 = log?.startStage(.preflight)
         let outcome = await Task.detached(priority: .userInitiated) { gate.check() }.value
+        if let stage1 { log?.endStage(.preflight, startedAt: stage1) }
         setBusy(false)
         guard case .missing(let failure) = outcome else {
             setStatus("")
             return true
         }
+        log?.note("Rosetta 2 missing: \(failure.userMessage)")
 
         NSApp.activate(ignoringOtherApps: true)
         let alert = NSAlert()
@@ -310,6 +319,7 @@ final class WizardWindowController: NSObject, NSWindowDelegate {
         }
 
         setBusy(true)
+        let installStart = DispatchTime.now()
         let ticker = InstallTicker { [weak self] message in self?.setStatus(message) }
         let install = await Task.detached(priority: .userInitiated) {
             gate.attemptInstall(onStatus: { phase in
@@ -323,9 +333,11 @@ final class WizardWindowController: NSObject, NSWindowDelegate {
         setBusy(false)
         switch install {
         case .installed:
+            log?.note("Rosetta 2 installed", since: installStart)
             setStatus("")
             return true
         case .failed(let f):
+            log?.note("Rosetta 2 install failed (\(f.userMessage))", since: installStart)
             // Apple's installer can report success and change nothing, or be
             // unavailable entirely. Either way the user gets a readable reason.
             setStatus("\(f.userMessage) \(f.suggestedAction)", isError: true)
@@ -339,9 +351,10 @@ final class WizardWindowController: NSObject, NSWindowDelegate {
 
         let engine = self.engine
         let prefixManager = self.prefixManager
+        let log = self.log
         Task {
             do {
-                try await engine.ensureDefaultActive { update in
+                try await engine.ensureDefaultActive(log: log) { update in
                     Task { @MainActor [weak self] in self?.applyEngineProgress(update) }
                 }
                 await MainActor.run {
@@ -349,12 +362,13 @@ final class WizardWindowController: NSObject, NSWindowDelegate {
                     self.setStatus("Finishing the Windows environment (first time only)…")
                 }
                 try await Task.detached(priority: .userInitiated) {
-                    try prefixManager.ensurePrefix()
+                    try prefixManager.ensurePrefix(log: log)
                 }.value
                 self.setBusy(false)
                 self.setStatus("Windows environment ready.")
                 self.renderNWS()
             } catch {
+                log?.note("environment setup failed: \(error.localizedDescription)")
                 self.setBusy(false)
                 self.setStatus(error.localizedDescription, isError: true)
             }
@@ -482,16 +496,17 @@ final class WizardWindowController: NSObject, NSWindowDelegate {
 
         let nws = self.nws
         let chosen = self.latestRelease
+        let log = self.log
         Task {
             do {
                 let installer: URL
                 if let release = chosen {
-                    installer = try await nws.download(release) { p in
+                    installer = try await nws.download(release, log: log) { p in
                         Task { @MainActor [weak self] in self?.applyNWSProgress(p) }
                     }
                 } else {
                     // GitHub was unreachable — use the vendor's official fallback link.
-                    installer = try await nws.downloadViaFallback { p in
+                    installer = try await nws.downloadViaFallback(log: log) { p in
                         Task { @MainActor [weak self] in self?.applyNWSProgress(p) }
                     }
                 }
@@ -500,7 +515,7 @@ final class WizardWindowController: NSObject, NSWindowDelegate {
                     self.setStatus("Installing New World Scheduler…")
                 }
                 try await Task.detached(priority: .userInitiated) {
-                    try await nws.install(installerAt: installer) { p in
+                    try await nws.install(installerAt: installer, log: log) { p in
                         Task { @MainActor [weak self] in self?.applyNWSProgress(p) }
                     }
                 }.value
@@ -509,6 +524,7 @@ final class WizardWindowController: NSObject, NSWindowDelegate {
                 self.setStatus("New World Scheduler installed.")
                 self.renderDone()
             } catch let e as NWSError {
+                log?.note("New World Scheduler step failed: \(e.errorDescription ?? "\(e)")")
                 self.setBusy(false)
                 // Rate-limited on the API path but we had a release: retry via fallback.
                 if case .rateLimited = e, chosen == nil {

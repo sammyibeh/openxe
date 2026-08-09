@@ -44,7 +44,9 @@ public final class Runner: Sendable {
     /// app's Info.plist version isn't bumped per release, so we key off the
     /// executable itself (name + size + mtime): a new install replaces the
     /// binary and changes this, which is exactly "first launch of a new build".
-    static var currentBuildID: String {
+    /// Public because `setup.log`'s run header identifies the build the same way
+    /// (spec §4.4).
+    public static var currentBuildID: String {
         guard let exe = Bundle.main.executableURL,
               let attrs = try? FileManager.default.attributesOfItem(atPath: exe.path)
         else { return "unknown" }

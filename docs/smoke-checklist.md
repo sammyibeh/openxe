@@ -56,12 +56,14 @@ Spec §7. Run before calling a build done. Record date and engine version.
 > state is expendable. Not the same as Reset Environment.
 - [ ] Settings → Remove OpenXE from this Mac… lists the engine, environment, logs, settings and each generated launcher, with a space figure
 - [ ] "Also delete my New World Scheduler information" is **unchecked** when the window opens
-- [ ] Leaving it unchecked: a "New World Scheduler Data (saved by OpenXE …)" folder appears in ~/Documents holding MyData, Backups, Settings1.json, RegistrationKey.json, the `.reg` file and README.txt
+- [ ] Leaving it unchecked: a "New World Scheduler Data (saved by OpenXE …)" folder appears in ~/Documents holding MyData, Backups, Settings1.json, RegistrationKey.json, DataTimestamps.json, Attachments, MyTemplates, the `.reg` file and README.txt
+- [ ] Attachments and MyTemplates are present in that folder even though they are empty, and MyTemplates still has its category subfolders inside it
+- [ ] README.txt names all seven, explains each in plain language, and says an empty folder is normal
 - [ ] `~/Documents`, `~/Downloads` and `~/Desktop` are otherwise untouched — the prefix's symlinks were removed, not followed
 - [ ] `pgrep wineserver` shows nothing for the OpenXE prefix afterwards
 - [ ] `~/Library/Application Support/OpenXE`, `~/Library/Logs/OpenXE`, the preferences plist and the "OpenXE Apps" launchers are gone; non-OpenXE `.app`s in that folder survive
 - [ ] The window ends by saying OpenXE itself must be quit and dragged to the Trash, and offers Quit
-- [ ] Reinstall + re-setup, copy MyData/Backups back: congregation data loads, and the licence is still registered (same Mac account)
+- [ ] Reinstall + re-setup, copy the whole saved folder's contents back: congregation data loads, and the licence is still registered (same Mac account)
 
 ## Failure paths
 - [ ] A non-PE file renamed to `.exe` is refused with a plain-language explanation

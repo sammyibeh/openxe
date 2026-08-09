@@ -22,7 +22,7 @@
 - **`WINEDEBUG` in `WineEnvironment.build` (`Paths.swift:69`) must not change.** Verified by spike (§3.1): `+loaddll` gives no benefit over the untouched value once filesystem polling is present, and changing it would affect every app launch.
 - **Canonical size copy:** "a one-time download of about 177 MB, which expands to about 700 MB on your Mac." Never "1.7 GB", never "~200 MB", never "~1 GB".
 - **Stage weights (§4.2), sum exactly 100:** preflight 1, downloadEngine 37, unpackEngine 25, preparePrefix 12, downloadNWS 10, installNWS 15. **These assume batched fonts (Task 6).** If Task 6 is reverted, stage 4 returns to ~59 s and the weights must be recomputed.
-- **Weights are data, never inline literals.** They live in `StageWeightTable` and are overridable via the `OpenXEStageWeights` user default, because cold calibration is deferred and they will need correcting without a rebuild (§4.2). The same rule covers `expectedArchiveEntries`, `expectedPrefixEntries`, the stall threshold, and `overshootFactor` — each a named constant in one place.
+- **Weights are data, never inline literals.** They live in `StageWeightTable` and are overridable via the `OpenXEStageWeights` user default, because they are a measurement — of one machine on one connection (§3.3) — and will need correcting without a rebuild (§4.2). The same rule covers `expectedArchiveEntries`, `expectedPrefixEntries`, the stall threshold, and `overshootFactor` — each a named constant in one place.
 - **All timing figures come from a warm Apple Silicon Mac.** The ETA will read optimistic on slower hardware; §7.3 Rule B is what keeps that from becoming a confidently wrong countdown.
 - **Stage-4 sub-step weights (§5.1), sum exactly 100:** 4a boot 82, 4b drain 3, 4c verify 2, 4d registry 6, 4e fonts 5, 4f linking 1, 4g marker 1.
 - **The journal is advisory; the filesystem is authoritative** (§6.2). Every resume decision starts from a ground-truth predicate.
@@ -452,8 +452,8 @@ final class SetupStageTests: XCTestCase {
         XCTAssertEqual(SetupCatalog.all.reduce(0) { $0 + $1.weight }, 100)
     }
 
-    /// Spec §4.2: weights are data. Cold calibration is deferred, so they must
-    /// be correctable with `defaults write` and no rebuild.
+    /// Spec §4.2: weights are data. They are a measurement of one machine on
+    /// one link, so they must be correctable with `defaults write`, no rebuild.
     func testValidOverrideIsAccepted() {
         let override = ["preflight": 2, "downloadEngine": 30, "unpackEngine": 30,
                         "preparePrefix": 20, "downloadNWS": 8, "installNWS": 10]
@@ -493,7 +493,7 @@ final class SetupStageTests: XCTestCase {
         XCTAssertEqual(SetupCatalog.all.map(\.id),
                        [.preflight, .downloadEngine, .unpackEngine,
                         .preparePrefix, .downloadNWS, .installNWS])
-        XCTAssertEqual(SetupCatalog.all.map(\.weight), [1, 37, 25, 12, 10, 15])
+        XCTAssertEqual(SetupCatalog.all.map(\.weight), [1, 67, 3, 8, 17, 4])
     }
 
     /// Spec §7.4: the launch path runs stages 1-4 and renormalises.
@@ -582,19 +582,16 @@ public struct SetupStage: Sendable, Equatable {
     public let hardCeiling: TimeInterval
 }
 
-/// Stage weights as DATA, not logic (spec §4.2). Cold-machine calibration is
-/// deferred, so these will need correcting later on evidence we do not yet
-/// have — via `defaults write dev.openxe.OpenXE OpenXEStageWeights`, with no
-/// rebuild. An ad-hoc-signed bundle cannot have a bundled resource edited
-/// without invalidating its signature, which is why the override lives in
-/// UserDefaults rather than a plist in Resources.
+/// Stage weights as DATA, not logic (spec §4.2). See the shipped file for the
+/// full provenance note; the values below are the 2026-08-09 calibration.
 public enum StageWeightTable {
 
-    /// Share of a 241 s reference run (spec §3.1, §3.2). Assumes batched font
-    /// provisioning (spec §5.3). MUST sum to 100.
+    /// Share of a **measured** 464.8 s run (spec §3.3, 2026-08-09). Assumes
+    /// batched font provisioning (spec §5.3). MUST sum to 100. Substantially a
+    /// bandwidth snapshot of one link — see the caveat in the shipped source.
     public static let builtIn: [SetupStage.ID: Int] = [
-        .preflight: 1, .downloadEngine: 37, .unpackEngine: 25,
-        .preparePrefix: 12, .downloadNWS: 10, .installNWS: 15,
+        .preflight: 1, .downloadEngine: 67, .unpackEngine: 3,
+        .preparePrefix: 8, .downloadNWS: 17, .installNWS: 4,
     ]
 
     public static let defaultsKey = "OpenXEStageWeights"
@@ -3064,7 +3061,7 @@ final class SetupCoordinatorTests: XCTestCase {
     }
 
     /// Spec §7.3 Rule B: an estimate already proven wrong is withdrawn, not
-    /// counted down. This is what makes the warm-machine defaults shippable.
+    /// counted down. This is what makes a one-machine calibration shippable.
     func testEstimateIsWithdrawnWhenTheStageOvershoots() async throws {
         let paths = makePaths()
         defer { try? FileManager.default.removeItem(at: paths.root) }
@@ -3149,7 +3146,7 @@ public final class SetupCoordinator: @unchecked Sendable {
     private var currentStageIndex: Int?
     private var currentStageStart = Date()
     private var completedWeight = 0
-    private var secondsPerWeightUnit: Double = 241.0 / 100.0   // spec §7.3
+    private var secondsPerWeightUnit: Double = 464.8 / 100.0   // spec §7.3, §3.3
     private var observedSeconds: Double = 0
     private var observedWeight = 0
 
@@ -3309,11 +3306,11 @@ public final class SetupCoordinator: @unchecked Sendable {
     /// from nothing is worse than none.
     ///
     /// Rule B — no estimate once the in-flight stage has overshot its
-    /// expectation by 1.5x. Every reference figure came from a warm Apple
-    /// Silicon Mac, so on slower hardware the initial estimate reads
-    /// optimistic; Rule B withdraws it instead of counting down to a number
-    /// this machine cannot meet. This is what makes the warm defaults safe to
-    /// ship without cold calibration.
+    /// expectation by 1.5x. The reference run (spec §3.3) is one machine on
+    /// one ~4.9 Mbit link, so on a different connection or slower hardware the
+    /// initial estimate is wrong; Rule B withdraws it instead of counting down
+    /// to a number this machine cannot meet. This is what makes a
+    /// single-machine, single-link calibration safe to ship.
     private func remaining(done: Double) -> TimeInterval? {
         guard observedWeight > 0 else { return nil }              // Rule A
         if let stageIndex = currentStageIndex {
@@ -4288,7 +4285,7 @@ git commit -m "docs: add setup-resilience smoke matrix"
 
 ## Self-Review
 
-**Spec coverage.** Walked §3–§14: §3 copy → Task 1; §4.1–4.2 → Task 3; §4.3 → Task 9; §4.4 → Task 2; §5.1 → Task 5; §5.2 + §10.1 → Task 7; **§5.3 → Task 6**; §6 → Tasks 8, 14, 15; §7.1–7.3 → Task 16; §7.4 → Task 18; §8.1–8.2 → Task 17; §8.3 → Task 14; §8.4 → Tasks 12, 17; §9.1–9.2 → Tasks 3, 14; §9.3 → Task 16; §9.4 → Task 18; §9.5 → Task 10; §10.2 → Task 13; §13 → Tasks 15, 19; §13.4 calibration → deferred by decision, procedure retained in the spec. No gaps found.
+**Spec coverage.** Walked §3–§14: §3 copy → Task 1; §4.1–4.2 → Task 3; §4.3 → Task 9; §4.4 → Task 2; §5.1 → Task 5; §5.2 + §10.1 → Task 7; **§5.3 → Task 6**; §6 → Tasks 8, 14, 15; §7.1–7.3 → Task 16; §7.4 → Task 18; §8.1–8.2 → Task 17; §8.3 → Task 14; §8.4 → Tasks 12, 17; §9.1–9.2 → Tasks 3, 14; §9.3 → Task 16; §9.4 → Task 18; §9.5 → Task 10; §10.2 → Task 13; §13 → Tasks 15, 19; §13.4 calibration → run warm-Rosetta on 2026-08-09 (§3.3 records the results; weights folded into Task 3's table), procedure retained in the spec for a genuinely cold machine. No gaps found.
 
 **Placeholder scan.** Task 17 Step 4 and Task 18 Step 1 describe rewiring in prose rather than full code, because both are mechanical replacements of existing `Task { }` blocks whose surrounding code the implementer will have open; the interfaces they consume are fully specified in Tasks 14–16. Every other step carries real code. No TBDs.
 
@@ -4296,7 +4293,7 @@ git commit -m "docs: add setup-resilience smoke matrix"
 
 **No remaining estimates in shipped constants.** The earlier draft carried `expectedArchiveEntries = 5_600` as a guess; Task 7 Step 4 now measures it with `tar -tf` and the constant ships as `0` until that step replaces it, so an unmeasured value cannot slip through unnoticed — the test asserts it exceeds the installed tree's 5,324.
 
-**One accepted approximation:** `expectedPrefixEntries = 2027` (Task 5) is a warm-machine measurement of one engine build. It drives only 4a's advisory bar, which is clamped and monotonic, so a wrong denominator yields a lazy bar rather than a wrong one. Deliberate, per decision 7.
+**One accepted approximation:** `expectedPrefixEntries = 2027` (Task 5) is a measurement of one engine build. It drives only 4a's advisory bar, which is clamped and monotonic, so a wrong denominator yields a lazy bar rather than a wrong one. Deliberate, per decision 7. **Confirmed 2026-08-09:** the plateau read 2030 in two independent runs with 2026 and 2029 adjacent, so 2027 sits inside the tail band and is kept as-is.
 
 **Weight coupling checked.** Task 3's stage weights and Task 5's sub-step weights both assume Task 6 landed. Both are asserted to sum to 100 by tests, so a partial application fails loudly rather than silently skewing the bar — but the *ratios* would be wrong if Task 6 were reverted without recomputing. Recorded in Global Constraints and in the §4.2 spec note.
 
@@ -4309,7 +4306,7 @@ All seven open questions were resolved before implementation. Recorded here so t
 | # | Decision | Consequence in this plan |
 |---|---|---|
 | 1 | **`EngineManager.install` stays merged.** Splitting it would buy separate reporting for a ~2 s verify step. | Stages 2 and 3 blend in the UI; Task 15 keeps the single `ensureDefaultActive` call. |
-| 2 | **Cold calibration deferred; ship warm-M2 defaults.** | Weights become data (`StageWeightTable`, Task 3) correctable via `defaults write`. §7.3 **Rule B** withdraws the estimate on 1.5× overshoot (Task 14). Spec states plainly the ETA reads optimistic on slower hardware. §13.4 kept as a runnable procedure. |
+| 2 | **Cold calibration deferred; ship warm-M2 defaults.** **Superseded 2026-08-09** by a full warm-Rosetta calibration run (spec §3.3): the six weights are now measured, not guessed. | Weights become data (`StageWeightTable`, Task 3) correctable via `defaults write`. §7.3 **Rule B** withdraws the estimate on 1.5× overshoot (Task 14). The residual error is bandwidth, not hardware — the reference link was ~4.9 Mbit/s. §13.4 kept as a runnable procedure for a genuinely cold machine and for a faster link. |
 | 3 | **Measure `expectedArchiveEntries`.** | Task 7 Step 4 lists the pinned archive with `tar -tf`; the `5,600` estimate is not shipped. |
 | 4 | **Ask for notification permission only on first stall, or on failure while backgrounded.** | Task 18 Step 3. A clean run never shows a permission dialog, and one can never stack on an error the user is reading. |
 | 5 | **Stall threshold stays 60 s.** | Task 11 unchanged. Rationale and the rejected 30 s alternative recorded in spec §11 R4; listed as a §13.4 calibration output. |
@@ -4318,5 +4315,6 @@ All seven open questions were resolved before implementation. Recorded here so t
 
 ### Deferred, with an owner
 
-- **Cold-machine calibration (spec §13.4).** Needs hardware with no Rosetta AOT cache. Blocked on availability, not on a decision. It is also condition (a) for removing `useBatchedImport`.
+- **Cold-machine calibration (spec §13.4).** Still deferred: needs hardware with no Rosetta AOT cache. The 2026-08-09 run was warm-Rosetta, so it produced weights but did not close this, and it is still condition (a) for removing `useBatchedImport`. Blocked on availability, not on a decision.
+- **A second calibration on a faster connection.** New after 2026-08-09. The shipped weights put 84 % of the run in the two download stages at ~4.9 Mbit/s; one run cannot tell a machine constant from a bandwidth snapshot, two runs can. Spec §11 R2.
 - **Rule B's 1.5× overshoot factor** and the 60 s stall threshold are both warm-machine guesses. Neither is load-bearing for correctness — each only affects when a message appears — but both should be checked when §13.4 runs.

@@ -44,19 +44,41 @@ public struct SetupStage: Sendable, Equatable {
     public let hardCeiling: TimeInterval
 }
 
-/// Stage weights as DATA, not logic (spec §4.2). Cold-machine calibration is
-/// deferred, so these will need correcting later on evidence we do not yet
-/// have — via `defaults write dev.openxe.OpenXE OpenXEStageWeights`, with no
-/// rebuild. An ad-hoc-signed bundle cannot have a bundled resource edited
-/// without invalidating its signature, which is why the override lives in
-/// UserDefaults rather than a plist in Resources.
+/// Stage weights as DATA, not logic (spec §4.2). They are overridable via
+/// `defaults write dev.openxe.OpenXE OpenXEStageWeights`, with no rebuild,
+/// because they are a measurement and measurements move. An ad-hoc-signed
+/// bundle cannot have a bundled resource edited without invalidating its
+/// signature, which is why the override lives in UserDefaults rather than a
+/// plist in Resources.
 public enum StageWeightTable {
 
-    /// Share of a 241 s reference run (spec §3.1, §3.2). Assumes batched font
-    /// provisioning (spec §5.3). MUST sum to 100.
+    /// Each stage's share of a **measured** reference run. MUST sum to 100.
+    ///
+    /// Provenance — replaced the earlier warm-machine estimates (1/37/25/12/10/15):
+    ///   - Source:  one instrumented cold run of the full wizard, `setup.log`
+    ///   - Date:    2026-08-09
+    ///   - Machine: macOS 27, build 26A5388g, Apple Silicon
+    ///   - Engine:  `gcenx-stable-11.0_1` (the pinned `EngineCatalog.stock`)
+    ///   - Total:   464.8 s across the six stages
+    ///   - Durations (s): preflight 0.4, downloadEngine 314.1, unpackEngine 14.1,
+    ///     preparePrefix 37.5, downloadNWS 81.1, installNWS 17.6
+    ///   - Method:  largest-remainder rounding of each share to integers summing
+    ///     to exactly 100. `preflight`'s true share is 0.09 %, floored to 1 so
+    ///     its segment is not zero-width; that 1 comes off `downloadEngine`'s 68.
+    ///   - Assumes batched font provisioning (spec §5.3). If the per-write font
+    ///     path is ever restored, stage 4 roughly doubles and this must be redone.
+    ///
+    /// **Caveat — this is substantially a bandwidth snapshot, not a machine
+    /// constant.** Both download stages are network-bound: NWS transferred at
+    /// 618 KB/s (~4.9 Mbit/s) on the link used, and the two downloads together
+    /// take 84 % of the run. On a fast connection that share collapses and these
+    /// weights are wrong in the opposite direction — `downloadEngine` far too
+    /// heavy, `preparePrefix` and `installNWS` far too light. They came from one
+    /// link on one afternoon. The ETA recalibration (spec §7.3) exists to absorb
+    /// exactly this, and the UserDefaults override exists to correct it.
     public static let builtIn: [SetupStage.ID: Int] = [
-        .preflight: 1, .downloadEngine: 37, .unpackEngine: 25,
-        .preparePrefix: 12, .downloadNWS: 10, .installNWS: 15,
+        .preflight: 1, .downloadEngine: 67, .unpackEngine: 3,
+        .preparePrefix: 8, .downloadNWS: 17, .installNWS: 4,
     ]
 
     public static let defaultsKey = "OpenXEStageWeights"

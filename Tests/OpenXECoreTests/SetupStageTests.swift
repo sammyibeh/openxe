@@ -49,7 +49,17 @@ final class SetupStageTests: XCTestCase {
         XCTAssertEqual(SetupCatalog.all.map(\.id),
                        [.preflight, .downloadEngine, .unpackEngine,
                         .preparePrefix, .downloadNWS, .installNWS])
-        XCTAssertEqual(SetupCatalog.all.map(\.weight), [1, 37, 25, 12, 10, 15])
+        XCTAssertEqual(SetupCatalog.all.map(\.weight), [1, 67, 3, 8, 17, 4])
+    }
+
+    /// The measured table itself, independent of `SetupCatalog` (which a
+    /// UserDefaults override can move). Cold run 2026-08-09, 464.8 s total —
+    /// see the provenance note on `StageWeightTable.builtIn`.
+    func testBuiltInWeightsAreTheMeasuredColdRunFigures() {
+        XCTAssertEqual(StageWeightTable.builtIn,
+                       [.preflight: 1, .downloadEngine: 67, .unpackEngine: 3,
+                        .preparePrefix: 8, .downloadNWS: 17, .installNWS: 4])
+        XCTAssertEqual(StageWeightTable.builtIn.values.reduce(0, +), 100)
     }
 
     /// Spec §7.4: the launch path runs stages 1-4 and renormalises.

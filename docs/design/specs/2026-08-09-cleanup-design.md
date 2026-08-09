@@ -69,9 +69,27 @@ All live NWS data is in one directory:
 `prefix/drive_c/users/<profile>/AppData/Local/NW Scheduler/` — 116 MB, of which about
 3.3 MB matters.
 
-Preserved: `MyData/` (the database), `Backups/`, `Settings1.json`, `RegistrationKey.json`.
+Preserved — seven targets, settled by a read-only listing of the live directory:
+
+| Target | Why |
+|---|---|
+| `MyData/` | the database |
+| `Backups/` | NWS's own `.NWSchedulerBackup` files |
+| `Settings1.json` | settings; DPAPI ciphertext, see §4.3 |
+| `RegistrationKey.json` | licence; DPAPI ciphertext, see §4.3 |
+| `DataTimestamps.json` | pairs with `MyData` and is meaningless apart from it |
+| `Attachments/` | user-supplied files bound to records |
+| `MyTemplates/` | user-authored print templates |
+
 Discarded: `MeetingData/` (re-downloadable), `MinorUpdates/` (96 MB of installer
-residue), `Logs/`, and the empty scratch directories.
+residue), `Logs/`, `MapCache/`, `Temp/`, `Updates/` — all regenerated on demand.
+
+`Attachments/` and `MyTemplates/` are empty on this Mac today: the first until the user
+attaches a file, the second as a tree of empty category folders. That structure is the
+user's work, so an item is recorded as preserved on *presence*, never on file count. The
+one case where "present but nothing copied" is correct is a symlink standing where a
+target should be — it is not data we can rescue and must not be followed out of the
+prefix, so it is excluded explicitly rather than inferred.
 
 Also captured: the `NWScheduler` value under
 `HKLM\System\CurrentControlSet\Control\Session Manager\Environment` in `system.reg`. The
@@ -156,7 +174,7 @@ The feature's whole value is that it deletes a lot. The invariants:
    saved-folder destination named beside it.
 4. On confirm: wineserver is terminated (prefix-scoped `reapAllServers`, then
    `wineserver -k`), so nothing holds files open.
-5. If the checkbox is off, the four preserve targets and the registry value are copied
+5. If the checkbox is off, the seven preserve targets and the registry value are copied
    out **before any deletion**. A failure here aborts the whole cleanup with nothing
    deleted.
 6. Targets are deleted, each allowlist-checked.

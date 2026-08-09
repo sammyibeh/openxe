@@ -557,10 +557,15 @@ public struct CleanupRunner: Sendable {
         // delete the log's own directory — see the re-open below. Written as it
         // happens, so a run that dies mid-way still says how far it got.
         var log = self.log
-        var transcript: [String] = []
+        // Each line carries the instant it was said, not the instant it is
+        // written. The replay below writes every line a second time, and
+        // restamping there flattens a whole run onto one second — which is the
+        // per-step timing a stalled delete would have been diagnosed with.
+        var transcript: [(instant: Date, line: String)] = []
         func say(_ line: String) {
-            transcript.append(line)
-            log?.note(line)
+            let instant = Date()
+            transcript.append((instant, line))
+            log?.note(line, at: instant)
         }
         defer { log?.close() }
 
@@ -643,8 +648,8 @@ public struct CleanupRunner: Sendable {
             dead.close()
             log = try? SetupLog(url: dead.fileURL)
             log?.note("(this log was removed by the cleanup it was recording; "
-                      + "re-created here, transcript replayed)")
-            for line in transcript { log?.note(line) }
+                      + "re-created here, transcript replayed with its original timestamps)")
+            for entry in transcript { log?.note(entry.line, at: entry.instant) }
         }
 
         // 4. Drop the .exe handler registration.

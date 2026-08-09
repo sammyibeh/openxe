@@ -45,9 +45,9 @@ public final class SetupLog: @unchecked Sendable {
         try? fm.moveItem(at: url, to: rotated)
     }
 
-    private func emit(_ line: String) {
+    private func emit(_ line: String, at instant: Date = Date()) {
         lock.lock(); defer { lock.unlock() }
-        let stamp = stamper.string(from: Date())
+        let stamp = stamper.string(from: instant)
         try? fileHandle.write(contentsOf: Data("\(stamp) \(line)\n".utf8))
     }
 
@@ -92,6 +92,17 @@ public final class SetupLog: @unchecked Sendable {
     }
 
     public func note(_ message: String) { emit(message) }
+
+    /// Write a line carrying an instant that is not "now".
+    ///
+    /// The one caller is cleanup's transcript replay: the removal deletes the
+    /// directory its own log lives in, re-creates the file and writes every line
+    /// again. Stamping those writes at write time collapses the whole run onto a
+    /// single instant — a real 2.7s removal replayed as twenty lines all reading
+    /// `19:46:57` — and per-line timing is exactly what is wanted when a large
+    /// delete stalls. The instant is captured once, when the line is first said,
+    /// and travels with it.
+    public func note(_ message: String, at instant: Date) { emit(message, at: instant) }
 
     /// A sub-stage measurement the six stage brackets do not carry — the engine
     /// transfer/verify split, the Rosetta install. Kept when Task 14 supersedes

@@ -29,6 +29,33 @@ final class SetupLogTests: XCTestCase {
         XCTAssertTrue(text.contains("59.4"))
     }
 
+    /// Cleanup replays its transcript into a log it had to re-create. Stamping
+    /// those writes at write time flattened a 2.7-second removal into twenty
+    /// lines all reading the same second, and per-step timing is the whole reason
+    /// the transcript is kept.
+    func testALineCanCarryAnInstantOtherThanNow() throws {
+        let url = tempURL()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+
+        let first = Date(timeIntervalSince1970: 1_786_000_000)   // 2026-08-06T…
+        let second = first.addingTimeInterval(3600)
+        let log = try SetupLog(url: url)
+        log.note("stopped the Windows environment", at: first)
+        log.note("removed: the Windows environment", at: second)
+        log.close()
+
+        let lines = try String(contentsOf: url, encoding: .utf8)
+            .split(separator: "\n").map(String.init)
+        XCTAssertEqual(lines.count, 2)
+        let stamps = lines.map { String($0.prefix(while: { $0 != " " })) }
+        XCTAssertNotEqual(stamps[0], stamps[1], "both lines were stamped with the same instant")
+
+        let formatter = ISO8601DateFormatter()
+        XCTAssertEqual(formatter.string(from: first), stamps[0])
+        XCTAssertEqual(formatter.string(from: second), stamps[1])
+        XCTAssertTrue(lines[0].hasSuffix("stopped the Windows environment"))
+    }
+
     func testTailReturnsLastLines() throws {
         let url = tempURL()
         defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }

@@ -91,16 +91,29 @@ final class CleanupTests: XCTestCase {
         try fm.createDirectory(at: prefix.appendingPathComponent("drive_c/users/Public"),
                                withIntermediateDirectories: true)
 
-        // NWS data: four keepers, three discards.
+        // NWS data: seven keepers, six discards — the shape of the real
+        // directory, including the two keepers that are empty on a live Mac.
         let data = profile.appendingPathComponent("AppData/Local/NW Scheduler", isDirectory: true)
         try write(data.appendingPathComponent("MyData/congregation.json"))
         try write(data.appendingPathComponent("MyData/schedule.json"))
         try write(data.appendingPathComponent("Backups/2026-08-01.NWSchedulerBackup"))
         try write(data.appendingPathComponent("Settings1.json"))
         try write(data.appendingPathComponent("RegistrationKey.json"))
+        try write(data.appendingPathComponent("DataTimestamps.json"))
+        // Empty today, and filled the moment the user attaches a file.
+        try fm.createDirectory(at: data.appendingPathComponent("Attachments"),
+                               withIntermediateDirectories: true)
+        // Present as a tree of empty category folders, exactly as NWS ships it.
+        for category in ["Assignment Slips", "Meeting Schedule", "Territory Cards"] {
+            try fm.createDirectory(at: data.appendingPathComponent("MyTemplates/\(category)"),
+                                   withIntermediateDirectories: true)
+        }
         try write(data.appendingPathComponent("MeetingData/week1.json"))
         try write(data.appendingPathComponent("MinorUpdates/setup.exe"))
         try write(data.appendingPathComponent("Logs/nws.log"))
+        try write(data.appendingPathComponent("MapCache/tiles.dat"))
+        try write(data.appendingPathComponent("Temp/scratch.tmp"))
+        try write(data.appendingPathComponent("Updates/update.zip"))
 
         // system.reg carrying the value nothing else records.
         let reg = """
@@ -291,9 +304,19 @@ final class CleanupTests: XCTestCase {
         let f = try makeFixture(bytesPerFile: 1000)
         let plan = f.planner.plan()
         XCTAssertEqual(plan.nwsDataDirectory?.path, f.nwsData.path)
-        XCTAssertEqual(plan.nwsDataBytes, 8000, "eight 1000-byte files in the data directory")
-        XCTAssertEqual(plan.preservableBytes, 5000,
-                       "only MyData (2), Backups (1), and the two JSON files")
+        XCTAssertEqual(plan.nwsDataBytes, 12000, "twelve 1000-byte files in the data directory")
+        XCTAssertEqual(plan.preservableBytes, 6000,
+                       "MyData (2), Backups (1), and the three JSON files; "
+                       + "the two empty folders add nothing")
+    }
+
+    /// Sizing must not treat an empty preserve target as a reason to report
+    /// nothing preservable — nor inflate the figure with folders that hold none.
+    func testEmptyPreserveTargetsContributeNoBytesButDoNotBreakSizing() throws {
+        let f = try makeFixture(bytesPerFile: 1000)
+        XCTAssertEqual(CleanupSafety.size(of: f.nwsData.appendingPathComponent("Attachments")), 0)
+        XCTAssertEqual(CleanupSafety.size(of: f.nwsData.appendingPathComponent("MyTemplates")), 0)
+        XCTAssertGreaterThan(f.planner.plan().preservableBytes, 0)
     }
 
     func testPlanTotalDoesNotDoubleCountNWSData() throws {
@@ -348,7 +371,7 @@ final class CleanupTests: XCTestCase {
 
     // MARK: preservation
 
-    func testKeepingDataCopiesExactlyTheFourTargets() throws {
+    func testKeepingDataCopiesExactlyTheSevenTargets() throws {
         let f = try makeFixture()
         let fm = FileManager.default
         let outcome = try makeRunner(f).run(plan: f.planner.plan(), keepNWSData: true,
@@ -356,18 +379,134 @@ final class CleanupTests: XCTestCase {
         let saved = try XCTUnwrap(outcome.preserved)
 
         XCTAssertEqual(Set(saved.itemsCopied),
-                       Set(["MyData", "Backups", "Settings1.json", "RegistrationKey.json"]))
-        XCTAssertEqual(saved.filesCopied, 5)
+                       Set(["MyData", "Backups", "Settings1.json", "RegistrationKey.json",
+                            "DataTimestamps.json", "Attachments", "MyTemplates"]))
+        XCTAssertEqual(saved.filesCopied, 6, "the two empty folders hold no files to count")
         for keep in ["MyData/congregation.json", "MyData/schedule.json",
                      "Backups/2026-08-01.NWSchedulerBackup",
-                     "Settings1.json", "RegistrationKey.json"] {
+                     "Settings1.json", "RegistrationKey.json", "DataTimestamps.json"] {
             XCTAssertTrue(fm.fileExists(atPath: saved.destination.appendingPathComponent(keep).path),
                           "\(keep) was not preserved")
         }
-        for discard in ["MeetingData", "MinorUpdates", "Logs"] {
+        for discard in ["MeetingData", "MinorUpdates", "Logs", "MapCache", "Temp", "Updates"] {
             XCTAssertFalse(
                 fm.fileExists(atPath: saved.destination.appendingPathComponent(discard).path),
                 "\(discard) should not have been preserved")
+        }
+    }
+
+    /// `Attachments` is empty on the real Mac today. If the copy path for an
+    /// empty folder is broken, nothing here notices until the day the user has
+    /// attachments and they do not come back.
+    func testAnEmptyAttachmentsFolderIsRescuedAsAFolder() throws {
+        let f = try makeFixture()
+        let fm = FileManager.default
+        let outcome = try makeRunner(f).run(plan: f.planner.plan(), keepNWSData: true,
+                                            documentsDirectory: f.documents, now: Date())
+        let saved = try XCTUnwrap(outcome.preserved)
+
+        XCTAssertTrue(saved.itemsCopied.contains("Attachments"))
+        var isDir: ObjCBool = false
+        XCTAssertTrue(
+            fm.fileExists(atPath: saved.destination.appendingPathComponent("Attachments").path,
+                          isDirectory: &isDir))
+        XCTAssertTrue(isDir.boolValue)
+    }
+
+    /// The same folder once the user has actually attached something.
+    func testAPopulatedAttachmentsFolderIsRescuedWithItsContents() throws {
+        let f = try makeFixture()
+        let fm = FileManager.default
+        let attachments = f.nwsData.appendingPathComponent("Attachments")
+        try Data("scan".utf8).write(to: attachments.appendingPathComponent("hall-contract.pdf"))
+        try fm.createDirectory(at: attachments.appendingPathComponent("Photos"),
+                               withIntermediateDirectories: true)
+        try Data("jpeg".utf8).write(
+            to: attachments.appendingPathComponent("Photos/territory-map.jpg"))
+
+        let outcome = try makeRunner(f).run(plan: f.planner.plan(), keepNWSData: true,
+                                            documentsDirectory: f.documents, now: Date())
+        let saved = try XCTUnwrap(outcome.preserved)
+
+        XCTAssertTrue(saved.itemsCopied.contains("Attachments"))
+        XCTAssertEqual(saved.filesCopied, 8, "six files plus the two attachments")
+        for keep in ["Attachments/hall-contract.pdf", "Attachments/Photos/territory-map.jpg"] {
+            XCTAssertTrue(fm.fileExists(atPath: saved.destination.appendingPathComponent(keep).path),
+                          "\(keep) was not preserved")
+        }
+    }
+
+    /// `MyTemplates` is a tree of empty category folders. The structure itself is
+    /// the user's work, so it has to survive even with no files in it.
+    func testMyTemplatesEmptyCategoryFoldersSurviveTheRescue() throws {
+        let f = try makeFixture()
+        let fm = FileManager.default
+        let outcome = try makeRunner(f).run(plan: f.planner.plan(), keepNWSData: true,
+                                            documentsDirectory: f.documents, now: Date())
+        let saved = try XCTUnwrap(outcome.preserved)
+
+        XCTAssertTrue(saved.itemsCopied.contains("MyTemplates"))
+        for category in ["Assignment Slips", "Meeting Schedule", "Territory Cards"] {
+            var isDir: ObjCBool = false
+            let url = saved.destination.appendingPathComponent("MyTemplates/\(category)")
+            XCTAssertTrue(fm.fileExists(atPath: url.path, isDirectory: &isDir),
+                          "the empty category folder \(category) was not recreated")
+            XCTAssertTrue(isDir.boolValue)
+        }
+    }
+
+    func testAPopulatedMyTemplatesFolderIsRescuedWithItsContents() throws {
+        let f = try makeFixture()
+        let fm = FileManager.default
+        try Data("template".utf8).write(
+            to: f.nwsData.appendingPathComponent("MyTemplates/Assignment Slips/S-89.nwstemplate"))
+
+        let outcome = try makeRunner(f).run(plan: f.planner.plan(), keepNWSData: true,
+                                            documentsDirectory: f.documents, now: Date())
+        let saved = try XCTUnwrap(outcome.preserved)
+        XCTAssertTrue(fm.fileExists(atPath: saved.destination
+            .appendingPathComponent("MyTemplates/Assignment Slips/S-89.nwstemplate").path))
+        XCTAssertEqual(saved.filesCopied, 7)
+    }
+
+    /// `DataTimestamps.json` is meaningless on its own — it pairs with MyData,
+    /// so losing it while keeping the database is the failure to guard against.
+    func testDataTimestampsIsRescuedAlongsideMyData() throws {
+        let f = try makeFixture()
+        let fm = FileManager.default
+        try Data(#"{"MyData":"2026-08-09"}"#.utf8)
+            .write(to: f.nwsData.appendingPathComponent("DataTimestamps.json"))
+
+        let outcome = try makeRunner(f).run(plan: f.planner.plan(), keepNWSData: true,
+                                            documentsDirectory: f.documents, now: Date())
+        let saved = try XCTUnwrap(outcome.preserved)
+        let restored = try String(
+            contentsOf: saved.destination.appendingPathComponent("DataTimestamps.json"),
+            encoding: .utf8)
+        XCTAssertEqual(restored, #"{"MyData":"2026-08-09"}"#)
+        XCTAssertTrue(fm.fileExists(
+            atPath: saved.destination.appendingPathComponent("MyData/congregation.json").path))
+    }
+
+    /// Every name in the preserve set must be explained in the README. A name
+    /// added to the set without copy for it lands in the user's Documents folder
+    /// as an unlabelled folder they will not recognise in five years.
+    func testEveryPreservedItemIsExplainedInTheReadme() throws {
+        let f = try makeFixture()
+        let outcome = try makeRunner(f).run(plan: f.planner.plan(), keepNWSData: true,
+                                            documentsDirectory: f.documents, now: Date())
+        let saved = try XCTUnwrap(outcome.preserved)
+        XCTAssertEqual(Set(saved.itemsCopied), Set(CleanupPlanner.preserveNames))
+
+        let readme = try String(
+            contentsOf: saved.destination.appendingPathComponent("README.txt"), encoding: .utf8)
+        for name in CleanupPlanner.preserveNames {
+            guard let line = readme.split(separator: "\n").first(where: {
+                $0.trimmingCharacters(in: .whitespaces).hasPrefix(name)
+            }) else {
+                return XCTFail("\(name) is not listed in the README")
+            }
+            XCTAssertTrue(line.contains(" - "), "\(name) is listed but not explained")
         }
     }
 
@@ -416,9 +555,9 @@ final class CleanupTests: XCTestCase {
         let outcome = try makeRunner(f).run(plan: f.planner.plan(), keepNWSData: true,
                                             documentsDirectory: f.documents, now: Date())
         let saved = try XCTUnwrap(outcome.preserved)
-        XCTAssertEqual(saved.filesCopied, 4, "the empty folder cost us the other four files")
+        XCTAssertEqual(saved.filesCopied, 5, "the empty folder cost us the other five files")
         for keep in ["MyData/congregation.json", "MyData/schedule.json",
-                     "Settings1.json", "RegistrationKey.json"] {
+                     "Settings1.json", "RegistrationKey.json", "DataTimestamps.json"] {
             XCTAssertTrue(fm.fileExists(atPath: saved.destination.appendingPathComponent(keep).path),
                           "\(keep) was lost when an empty folder was encountered")
         }

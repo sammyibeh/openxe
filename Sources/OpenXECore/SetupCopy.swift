@@ -196,6 +196,20 @@ public enum SetupCopy {
             + problems.joined(separator: "\n• ")
     }
 
+    /// One plain-language line per preserved item, keyed on the name as it
+    /// appears on disk. Anything in `CleanupPlanner.preserveNames` without an
+    /// entry here would land in the user's Documents folder as an unexplained
+    /// folder, so the pairing is covered by a test rather than left to care.
+    static let cleanupSavedItemDescriptions: [String: String] = [
+        "MyData": "your congregation information and schedules",
+        "Backups": "New World Scheduler's own backup files",
+        "Settings1.json": "your New World Scheduler settings",
+        "RegistrationKey.json": "your New World Scheduler licence",
+        "DataTimestamps.json": "a small file New World Scheduler keeps alongside MyData",
+        "Attachments": "files you attached to records, if you added any",
+        "MyTemplates": "the printing templates and categories you set up",
+    ]
+
     /// Written into the saved folder. This is the one place the DPAPI caveat is
     /// recorded for whoever finds the folder later — see the 2026-08-09 spec
     /// §4.3: the licence file only decrypts under the same Windows user name.
@@ -211,17 +225,12 @@ public enum SetupCopy {
         What is here:
 
         """
+        let width = items.map(\.count).max() ?? 0
         for item in items {
-            switch item {
-            case "MyData":
-                text += "  MyData              - your congregation information and schedules\n"
-            case "Backups":
-                text += "  Backups             - New World Scheduler's own backup files\n"
-            case "Settings1.json":
-                text += "  Settings1.json      - your New World Scheduler settings\n"
-            case "RegistrationKey.json":
-                text += "  RegistrationKey.json - your New World Scheduler licence\n"
-            default:
+            let name = item.padding(toLength: max(width, item.count), withPad: " ", startingAt: 0)
+            if let detail = cleanupSavedItemDescriptions[item] {
+                text += "  \(name) - \(detail)\n"
+            } else {
                 text += "  \(item)\n"
             }
         }
@@ -238,9 +247,12 @@ public enum SetupCopy {
         }
         text += """
 
+        Some of these folders may be empty. That is normal — it means you had not
+        put anything in them yet. They are kept anyway so that nothing is lost.
+
         If you install OpenXE and New World Scheduler again on this Mac, copying
-        MyData and Backups back into New World Scheduler's data folder restores your
-        information.
+        everything in this folder back into New World Scheduler's data folder
+        restores your information.
 
         One thing to know about the settings and licence files: they were encrypted
         by the Windows environment using your Mac account name. They will work again

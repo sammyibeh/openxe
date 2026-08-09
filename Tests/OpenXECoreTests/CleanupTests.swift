@@ -371,6 +371,82 @@ final class CleanupTests: XCTestCase {
         }
     }
 
+    /// The path least likely to be exercised by accident.
+    ///
+    /// A preserved folder that exists but holds nothing must still be rescued as
+    /// a folder and still be reported. The obvious implementation — "record it
+    /// if we copied at least one file" — drops it silently, and the user is told
+    /// their folder was not there when in fact it was empty.
+    func testAnEmptyPreservedFolderIsStillRescuedAndReported() throws {
+        let f = try makeFixture()
+        let fm = FileManager.default
+        let backups = f.nwsData.appendingPathComponent("Backups")
+        try fm.removeItem(at: backups)
+        try fm.createDirectory(at: backups, withIntermediateDirectories: true)
+        XCTAssertTrue(try fm.contentsOfDirectory(atPath: backups.path).isEmpty)
+
+        let outcome = try makeRunner(f).run(plan: f.planner.plan(), keepNWSData: true,
+                                            documentsDirectory: f.documents, now: Date())
+        let saved = try XCTUnwrap(outcome.preserved)
+
+        XCTAssertTrue(saved.itemsCopied.contains("Backups"),
+                      "an empty folder was silently dropped from the rescue")
+        var isDir: ObjCBool = false
+        XCTAssertTrue(
+            fm.fileExists(atPath: saved.destination.appendingPathComponent("Backups").path,
+                          isDirectory: &isDir),
+            "the empty folder was not recreated in the rescue copy")
+        XCTAssertTrue(isDir.boolValue, "the empty folder came back as a file")
+
+        let readme = try String(
+            contentsOf: saved.destination.appendingPathComponent("README.txt"), encoding: .utf8)
+        XCTAssertTrue(readme.contains("Backups"),
+                      "the README must list a folder that was rescued empty")
+    }
+
+    /// An empty folder must not be mistaken for a failure either — the rescue
+    /// continues and the rest of the set still arrives.
+    func testAnEmptyPreservedFolderDoesNotAbortTheRescue() throws {
+        let f = try makeFixture()
+        let fm = FileManager.default
+        try fm.removeItem(at: f.nwsData.appendingPathComponent("Backups"))
+        try fm.createDirectory(at: f.nwsData.appendingPathComponent("Backups"),
+                               withIntermediateDirectories: true)
+
+        let outcome = try makeRunner(f).run(plan: f.planner.plan(), keepNWSData: true,
+                                            documentsDirectory: f.documents, now: Date())
+        let saved = try XCTUnwrap(outcome.preserved)
+        XCTAssertEqual(saved.filesCopied, 4, "the empty folder cost us the other four files")
+        for keep in ["MyData/congregation.json", "MyData/schedule.json",
+                     "Settings1.json", "RegistrationKey.json"] {
+            XCTAssertTrue(fm.fileExists(atPath: saved.destination.appendingPathComponent(keep).path),
+                          "\(keep) was lost when an empty folder was encountered")
+        }
+    }
+
+    /// A symlink standing where a preserve target should be is not data we can
+    /// rescue, and following it would leave the prefix. It must be skipped *and*
+    /// not reported as saved — the one case where "nothing copied" is correct.
+    func testASymlinkedPreserveTargetIsSkippedAndNotClaimed() throws {
+        let f = try makeFixture()
+        let fm = FileManager.default
+        try fm.removeItem(at: f.nwsData.appendingPathComponent("Backups"))
+        try fm.createSymbolicLink(
+            atPath: f.nwsData.appendingPathComponent("Backups").path,
+            withDestinationPath: f.documents.path)
+
+        let outcome = try makeRunner(f).run(plan: f.planner.plan(), keepNWSData: true,
+                                            documentsDirectory: f.documents, now: Date())
+        let saved = try XCTUnwrap(outcome.preserved)
+        XCTAssertFalse(saved.itemsCopied.contains("Backups"),
+                       "a symlink was reported as rescued data")
+        XCTAssertFalse(
+            fm.fileExists(atPath: saved.destination.appendingPathComponent("Backups").path),
+            "a symlink out of the prefix was copied into the rescue")
+        XCTAssertTrue(fm.fileExists(
+            atPath: f.documents.appendingPathComponent("congregation-notes.txt").path))
+    }
+
     func testPreservationCapturesTheRegistryValueThatWouldOtherwiseBeLost() throws {
         let f = try makeFixture()
         let outcome = try makeRunner(f).run(plan: f.planner.plan(), keepNWSData: true,

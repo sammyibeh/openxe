@@ -1,6 +1,9 @@
 # Setup Resilience Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use GitHub task-list checkbox syntax for tracking.
+> **Counting steps:** this line deliberately contains no literal checkbox, so
+> `grep -c '^\- \[ \]'` and `grep -c '^\- \[x\]'` return the true open and done counts.
+> The plan has **109** steps in total. A count of 110 has picked up a prose mention.
 
 **Goal:** Rework OpenXE's first-run setup into a resilient, observable, cancellable flow — a diagnosable log, real progress through the silent stretch, visible failures with retry, and a quit path that cleans up after itself.
 
@@ -31,6 +34,8 @@
 Tasks 1–5 are front-loaded for diagnosability: after Task 5 a failed install on someone else's Mac produces a `setup.log` and a visibly advancing stage 4, which is what makes the next remote install debuggable. Task 6 is the font-batching performance change — placed here, adjacent to the font code it modifies and before any coordinator work, so it stays independently revertable. Tasks 7–13 build the resilience machinery. Task 14 assembles the coordinator. Tasks 16+ are UI and cleanup.
 
 **Task 6 is a leaf.** It depends only on Tasks 2, 4 and 5, and nothing after it depends on it. It rides along with a correctness/observability effort without being entangled in it: `git revert` of that single commit restores the per-write path, and flipping `FontProvisioning.useBatchedImport` does so without a revert at all. Its only coupling is numeric — the stage weights in Task 3 assume it landed (see Global Constraints).
+
+**Out-of-band work between Task 7 and Task 8 (2026-08-09).** The cold-machine calibration gate sits here, and the gate needs six measured stage durations that the build did not emit. Rather than pull Tasks 8, 9, 14, 15 and 17–18 forward to get them — the plan's entire back half, and the thing the gate exists to inform — the *existing* setup path was bracketed with the already-shipped `SetupLog`: `docs/design/specs/2026-08-09-setup-log-instrumentation-design.md`. Two methods on `SetupLog`, no new types, no plan task pre-empted. Tasks 14–15 supersede it by subtraction; §7 of that spec lists exactly what to delete. It adds no steps to the 109 below.
 
 **Tasks requiring the injectable stage-runner seam to exist first (Task 14, Step 1):** Task 15 (fault-injection matrix) and the retry/stall/cancel tests inside Task 14 itself. Component-level fault tests (bad checksum, tar failure) need no seam — they use fixture files and are testable from Task 5 onward.
 

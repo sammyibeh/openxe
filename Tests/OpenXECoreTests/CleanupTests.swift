@@ -158,11 +158,19 @@ final class CleanupTests: XCTestCase {
 
     private func makeRunner(
         _ f: Fixture,
+        log: SetupLog? = nil,
         shutdown: @escaping @Sendable () -> Void = {},
         unregister: @escaping @Sendable () -> LaunchServicesUnregistration = { .noBundle }
     ) -> CleanupRunner {
         CleanupRunner(planner: f.planner, paths: f.paths, home: f.home, sandbox: f.sandbox,
-                      shutdownWineserver: shutdown, unregisterFromLaunchServices: unregister)
+                      log: log, shutdownWineserver: shutdown,
+                      unregisterFromLaunchServices: unregister)
+    }
+
+    /// The log lives where it lives on a real Mac — inside `Logs/OpenXE`, which
+    /// the removal itself deletes. That is the interesting part.
+    private func logURL(_ f: Fixture) -> URL {
+        f.library.appendingPathComponent("Logs/OpenXE/setup.log")
     }
 
     // MARK: symlink containment — the reason this feature needs tests
@@ -743,6 +751,135 @@ final class CleanupTests: XCTestCase {
                                     documentsDirectory: f.documents, now: Date())
         XCTAssertTrue(second.removed.isEmpty)
         XCTAssertTrue(second.skipped.isEmpty)
+    }
+
+    // MARK: the log
+    //
+    // A removal that half-runs used to leave no trace at all: establishing
+    // whether the user's Remove had run took inode birth times. One file must
+    // answer "did cleanup run, and what did it do?" — including when it aborted,
+    // and including when it deleted the log directory it was writing into.
+
+    func testTheLogRecordsThePlanTheRescueAndEveryRemoval() throws {
+        let f = try makeFixture()
+        let url = logURL(f)
+        let plan = f.planner.plan()
+        _ = try makeRunner(f, log: try SetupLog(url: url), unregister: {
+            .unregistered(path: "/Applications/OpenXE.app")
+        }).run(plan: plan, keepNWSData: true, documentsDirectory: f.documents, now: Date())
+
+        let text = try String(contentsOf: url, encoding: .utf8)
+        XCTAssertTrue(text.contains(CleanupRunner.logBeginBanner))
+        XCTAssertTrue(text.contains(CleanupRunner.logEndBanner))
+        XCTAssertTrue(text.contains("keepNWSData=true"))
+
+        // What was planned, by path, before anything happened.
+        for target in plan.targets {
+            XCTAssertTrue(text.contains("plan: \(target.label) [\(target.url.path)]"),
+                          "the plan did not record \(target.url.path)")
+        }
+        // What was preserved, and where it went.
+        XCTAssertTrue(text.contains("preserved"))
+        XCTAssertTrue(text.contains("New World Scheduler Data (saved by OpenXE"))
+        XCTAssertTrue(text.contains("MyData"))
+        // What was removed.
+        for target in plan.targets {
+            XCTAssertTrue(text.contains("removed: \(target.label) [\(target.url.path)]"),
+                          "the removal of \(target.url.path) is not in the log")
+        }
+        // What happened to the handler registration, and the outcome.
+        XCTAssertTrue(text.contains("unregistered the .exe handler: /Applications/OpenXE.app"))
+        XCTAssertTrue(text.contains("outcome: removed=\(plan.targets.count) skipped=0"))
+    }
+
+    /// The removal deletes `Logs/OpenXE`. Without re-opening the log afterwards,
+    /// the successful case is the one case that leaves no record — writes land on
+    /// an unlinked inode and the file is simply gone.
+    func testTheLogSurvivesTheDeletionOfItsOwnDirectory() throws {
+        let f = try makeFixture()
+        let url = logURL(f)
+        let plan = f.planner.plan()
+        XCTAssertTrue(plan.targets.contains { $0.url.lastPathComponent == "OpenXE"
+                                              && $0.url.path.contains("Logs") },
+                      "fixture must plan to delete the log directory, or this proves nothing")
+
+        _ = try makeRunner(f, log: try SetupLog(url: url))
+            .run(plan: plan, keepNWSData: false, documentsDirectory: f.documents, now: Date())
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: url.path),
+                      "the cleanup deleted its own log and left no record that it ran")
+        let text = try String(contentsOf: url, encoding: .utf8)
+        XCTAssertTrue(text.contains("re-created"), "the re-created log must say why it is short")
+        XCTAssertTrue(text.contains(CleanupRunner.logBeginBanner),
+                      "the whole transcript must be replayed, not just the tail")
+        XCTAssertTrue(text.contains("plan: "))
+        XCTAssertTrue(text.contains("removed: "))
+        XCTAssertTrue(text.contains(CleanupRunner.logEndBanner))
+    }
+
+    func testAnAbortedCleanupSaysWhatStoppedItAndThatNothingWasRemoved() throws {
+        let f = try makeFixture()
+        let url = logURL(f)
+        let impossible = URL(fileURLWithPath: "/dev/null/nope")
+        XCTAssertThrowsError(
+            try makeRunner(f, log: try SetupLog(url: url))
+                .run(plan: f.planner.plan(), keepNWSData: true,
+                     documentsDirectory: impossible, now: Date()))
+
+        let text = try String(contentsOf: url, encoding: .utf8)
+        XCTAssertTrue(text.contains(CleanupRunner.logBeginBanner))
+        XCTAssertTrue(text.contains("ABORTED"))
+        XCTAssertTrue(text.contains("nothing was removed"))
+        XCTAssertFalse(text.contains("removed: "), "an aborted run must not claim removals")
+        XCTAssertTrue(text.contains(CleanupRunner.logEndBanner),
+                      "an aborted run still closes its record")
+    }
+
+    func testASkippedTargetIsNamedInTheLogWithItsReason() throws {
+        let f = try makeFixture()
+        let url = logURL(f)
+        var plan = f.planner.plan()
+        let outsider = f.documents.appendingPathComponent("congregation-notes.txt")
+        plan = CleanupPlan(
+            targets: [CleanupTarget(url: outsider, label: "smuggled", sizeBytes: 1)] + plan.targets,
+            nwsDataDirectory: plan.nwsDataDirectory, nwsDataBytes: plan.nwsDataBytes,
+            preservableBytes: plan.preservableBytes, launcherCount: plan.launcherCount)
+
+        _ = try makeRunner(f, log: try SetupLog(url: url))
+            .run(plan: plan, keepNWSData: false, documentsDirectory: f.documents, now: Date())
+
+        let text = try String(contentsOf: url, encoding: .utf8)
+        XCTAssertTrue(text.contains("SKIPPED: smuggled"))
+        XCTAssertTrue(text.contains("outside the area OpenXE is allowed to remove"))
+        XCTAssertTrue(text.contains("skipped=1"))
+    }
+
+    /// The translocation refusal has to be legible in the log, or the user is
+    /// left with an .exe handler that quietly outlived the removal.
+    func testARefusedUnregistrationIsRecorded() throws {
+        let f = try makeFixture()
+        let url = logURL(f)
+        let translocated = "/private/var/folders/z4/T/AppTranslocation/ABC/d/OpenXE.app"
+        let outcome = try makeRunner(f, log: try SetupLog(url: url), unregister: {
+            .refusedUnresolvedTranslocation(translocated: translocated)
+        }).run(plan: f.planner.plan(), keepNWSData: false,
+               documentsDirectory: f.documents, now: Date())
+
+        XCTAssertEqual(outcome.unregistration,
+                       .refusedUnresolvedTranslocation(translocated: translocated))
+        let text = try String(contentsOf: url, encoding: .utf8)
+        XCTAssertTrue(text.contains("DID NOT unregister the .exe handler"))
+        XCTAssertTrue(text.contains(translocated))
+    }
+
+    /// Logging is diagnostic, not load-bearing: a removal must still work when no
+    /// log could be opened at all.
+    func testRemovalWorksWithoutALog() throws {
+        let f = try makeFixture()
+        let outcome = try makeRunner(f, log: nil)
+            .run(plan: f.planner.plan(), keepNWSData: false,
+                 documentsDirectory: f.documents, now: Date())
+        XCTAssertFalse(outcome.removed.isEmpty)
     }
 
     // MARK: copy

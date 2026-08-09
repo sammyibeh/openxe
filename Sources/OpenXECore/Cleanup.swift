@@ -495,6 +495,12 @@ public struct CleanupRunner: Sendable {
     /// When non-nil, every deletion must fall inside this directory. Tests pass
     /// their own temporary directory; production passes nil.
     let sandbox: URL?
+    /// The narrative log (spec §4.4), shared with setup. Optional because
+    /// logging is diagnostic: a removal that cannot open a log still runs.
+    ///
+    /// The runner closes it — a removal is the last thing that happens in a
+    /// session, and the log it is handed may be replaced mid-run (see `run`).
+    let log: SetupLog?
     /// Injected so tests never shell out. Production passes a closure that
     /// terminates the real wineserver.
     let shutdownWineserver: @Sendable () -> Void
@@ -503,6 +509,7 @@ public struct CleanupRunner: Sendable {
     let unregisterFromLaunchServices: @Sendable () -> LaunchServicesUnregistration
 
     public init(planner: CleanupPlanner, paths: OpenXEPaths, home: URL, sandbox: URL?,
+                log: SetupLog?,
                 shutdownWineserver: @escaping @Sendable () -> Void,
                 unregisterFromLaunchServices: @escaping @Sendable ()
                     -> LaunchServicesUnregistration) {
@@ -510,9 +517,15 @@ public struct CleanupRunner: Sendable {
         self.paths = paths
         self.home = home
         self.sandbox = sandbox
+        self.log = log
         self.shutdownWineserver = shutdownWineserver
         self.unregisterFromLaunchServices = unregisterFromLaunchServices
     }
+
+    /// Banners matching `SetupLog`'s own `===== setup run begin =====`, so a
+    /// removal is findable in a log that also carries setup runs.
+    public static let logBeginBanner = "===== cleanup run begin ====="
+    public static let logEndBanner = "===== cleanup run end ====="
 
     /// The boundary that makes a destructive suite survivable. A test bundle may
     /// only run cleanup against roots inside its own temporary sandbox; without
@@ -538,19 +551,59 @@ public struct CleanupRunner: Sendable {
     public func run(plan: CleanupPlan, keepNWSData: Bool,
                     documentsDirectory: URL, now: Date) throws -> CleanupOutcome {
         try assertBoundary()
+        let started = DispatchTime.now()
+
+        // Every line is both written immediately and kept, because step 3 can
+        // delete the log's own directory — see the re-open below. Written as it
+        // happens, so a run that dies mid-way still says how far it got.
+        var log = self.log
+        var transcript: [String] = []
+        func say(_ line: String) {
+            transcript.append(line)
+            log?.note(line)
+        }
+        defer { log?.close() }
+
+        say(Self.logBeginBanner)
+        say("cleanup begin: build=\(Runner.currentBuildID) keepNWSData=\(keepNWSData) "
+            + "planned=\(plan.targets.count) totalBytes=\(plan.totalBytes) "
+            + "launchers=\(plan.launcherCount)")
+        for target in plan.targets {
+            say("plan: \(target.label) [\(target.url.path)] \(target.sizeBytes) bytes")
+        }
+        if let dataDir = plan.nwsDataDirectory {
+            say("plan: New World Scheduler data [\(dataDir.path)] \(plan.nwsDataBytes) bytes, "
+                + "\(plan.preservableBytes) bytes preservable")
+        } else {
+            say("plan: no New World Scheduler data directory found")
+        }
 
         // 1. Nothing may hold prefix files open.
         shutdownWineserver()
+        say("stopped the Windows environment")
 
         // 2. Preserve before deleting. Ordering is the whole point.
         var preserved: PreservedData?
         if keepNWSData, let dataDir = plan.nwsDataDirectory {
             do {
-                preserved = try preserve(from: dataDir,
+                let saved = try preserve(from: dataDir,
                                          documentsDirectory: documentsDirectory, now: now)
+                preserved = saved
+                say("preserved \(saved.filesCopied) files, \(saved.bytes) bytes "
+                    + "-> \(saved.destination.path)")
+                say("preserved items: \(saved.itemsCopied.joined(separator: ", "))")
+                say("registry value \(NWSRegistryCapture.valueName): "
+                    + (saved.registryValue == nil ? "not found" : "captured"))
             } catch {
+                say("ABORTED: could not save your information "
+                    + "(\(error.localizedDescription)) — nothing was removed")
+                say(Self.logEndBanner)
                 throw CleanupError.preserveFailed(error.localizedDescription)
             }
+        } else if keepNWSData {
+            say("nothing to preserve: no New World Scheduler data directory")
+        } else {
+            say("keepNWSData=false: no copy of the data was made")
         }
 
         // 3. Delete, allowlist-checking every single target.
@@ -563,7 +616,9 @@ public struct CleanupRunner: Sendable {
 
         for target in plan.targets {
             guard CleanupSafety.isDeletable(target.url, allowedRoots: roots, home: home) else {
-                skipped.append("\(target.label) — outside the area OpenXE is allowed to remove")
+                let reason = "\(target.label) — outside the area OpenXE is allowed to remove"
+                skipped.append(reason)
+                say("SKIPPED: \(reason) [\(target.url.path)]")
                 continue
             }
             do {
@@ -571,13 +626,35 @@ public struct CleanupRunner: Sendable {
                 removed.append(target)
                 reclaimed += target.sizeBytes
                 if launcherSet.contains(target.url.path) { launchersRemoved += 1 }
+                say("removed: \(target.label) [\(target.url.path)] \(target.sizeBytes) bytes")
             } catch {
-                skipped.append("\(target.label) — \(error.localizedDescription)")
+                let reason = "\(target.label) — \(error.localizedDescription)"
+                skipped.append(reason)
+                say("SKIPPED: \(reason) [\(target.url.path)]")
             }
+        }
+
+        // 3a. The log lives in ~/Library/Logs/OpenXE, which step 3 just deleted.
+        // Writes after that land on an unlinked inode nobody can read, so the
+        // successful removal would be the one outcome that leaves no record —
+        // exactly the hole that cost a session of filesystem archaeology. Re-open
+        // and replay, so one file still answers "did it run, and what did it do?"
+        if let dead = log, !FileManager.default.fileExists(atPath: dead.fileURL.path) {
+            dead.close()
+            log = try? SetupLog(url: dead.fileURL)
+            log?.note("(this log was removed by the cleanup it was recording; "
+                      + "re-created here, transcript replayed)")
+            for line in transcript { log?.note(line) }
         }
 
         // 4. Drop the .exe handler registration.
         let unregistration = unregisterFromLaunchServices()
+        say(unregistration.logLine)
+        say("outcome: removed=\(removed.count) skipped=\(skipped.count) "
+            + "reclaimedBytes=\(reclaimed) launchersRemoved=\(launchersRemoved) "
+            + "preserved=\(preserved != nil)")
+        log?.note("cleanup finished", since: started)
+        say(Self.logEndBanner)
 
         return CleanupOutcome(removed: removed, skipped: skipped, reclaimedBytes: reclaimed,
                               preserved: preserved, launchersRemoved: launchersRemoved,
@@ -647,8 +724,12 @@ public struct CleanupRunner: Sendable {
         // randomized mount, and unregistering it leaves the installed bundle
         // registered as the .exe handler.
         let location = bundleURL.map { resolver.resolve($0) }
+        // Opened here rather than plumbed through the Shell, which holds no path
+        // logic. A second handle on setup.log is acceptable: the app opens its
+        // own only during setup, and a removal is the end of the session.
+        let log = try? SetupLog(url: paths.setupLog)
         return CleanupRunner(
-            planner: planner, paths: paths, home: home, sandbox: nil,
+            planner: planner, paths: paths, home: home, sandbox: nil, log: log,
             shutdownWineserver: {
                 // Ask politely first — a clean shutdown flushes the registry —
                 // then reap by prefix-scoped PID, which also catches a server

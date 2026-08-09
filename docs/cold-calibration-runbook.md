@@ -14,10 +14,11 @@ Read §1 and §2 before touching anything.
 | | |
 |---|---|
 | Written | 2026-08-09, on branch `setup-resilience` |
+| Revised | 2026-08-09 — `setup.log` is now written by the real path; §4 and §6 rewritten |
 | Engine in scope | `gcenx-stable-11.0_1` (the pinned `EngineCatalog.stock`) |
 | Windows profile in scope | `sammyibeh` |
 | Blocking caveat | This Mac cannot be made cold in the Rosetta sense — see §2 |
-| Second blocking caveat | `setup.log` does not exist yet — see §4 |
+| Measurement source | `~/Library/Logs/OpenXE/setup.log`, with the §6.2 sampler as cross-check |
 
 ---
 
@@ -140,28 +141,66 @@ paths, so `~/OpenXE-NWS-Rescue-2026-08-09/` is untouched.
 
 ---
 
-## 4. The measurement blocker, and the way round it
+## 4. The measurement source
 
-Spec §13.4 says the run "needs no new tooling: `SetupLog` already records per-stage
-elapsed times". **That is not true of the current build.** `SetupLog` exists as a type,
-but `SetupCoordinator` does not exist yet (it is Task 8), and the only callers of
-`beginRun` / `beginStage` / `endStage` are in `Tests/OpenXECoreTests/SetupLogTests.swift`.
-No production path constructs a `SetupLog`. A run today produces **no `setup.log` at
-all**, and the shipping wizard is still the four-step `welcome → environment → nws →
-done` flow, not the six weighted stages.
+**This section previously recorded a blocker, and it contained a numbering error.**
+For the record, because a wrong task number sends the next reader down the wrong path:
+`SetupCoordinator` is **Task 14**, not Task 8. **Task 8 is `SetupJournal`.** The
+coordinator also depends on Tasks 9, 15 and 17–18, so "build the coordinator first" would
+have meant building the plan's entire back half — the half the calibration gate exists to
+inform. That is the reordering the gate is there to prevent.
 
-Two honest options:
+**As of 2026-08-09 the blocker is gone without touching the coordinator.** The path that
+ships today writes `~/Library/Logs/OpenXE/setup.log` directly:
+`docs/design/specs/2026-08-09-setup-log-instrumentation-design.md`. Two methods were
+added to the existing `SetupLog`; no new type was introduced, and nothing in Tasks 8–19
+was pre-empted.
 
-- **(A) Calibrate externally now.** Take wall-clock stage boundaries from the wizard's
-  visible transitions plus a filesystem sampler (§6.2). Yields a good
-  `expectedPrefixEntries` and usable stage durations; yields nothing for inter-event gap.
-- **(B) Do Task 8 first, then calibrate.** Gets `setup.log` and true per-stage and
-  per-event timing, at the cost of calibrating a build that is further from the one
-  measured so far.
+A run now produces, in order:
 
-**Recommendation: (A).** `expectedPrefixEntries` is the figure with the weakest evidence
-and the strongest external observability, and option A gets it without reordering the
-plan. Re-run the timing half after Task 8 lands, when `setup.log` makes it nearly free.
+```
+===== setup run begin =====
+build=… engine=gcenx-stable-11.0_1 freeBytes=… os=…
+--- stage preflight begin (attempt 1) ---
+--- stage preflight end (0.4s) ---
+--- stage downloadEngine begin (attempt 1) ---
+engine archive transferred in 412.7s
+engine archive sha256 verified in 6.1s
+--- stage downloadEngine end (418.8s) ---
+--- stage unpackEngine begin (attempt 1) ---
+unpacked 200 entries                       (every 200th, per spec §5.2)
+--- stage unpackEngine end (…s) ---
+--- stage preparePrefix begin (attempt 1) ---
+wineboot --init starting
+… verbatim Wine output …
+--- stage preparePrefix end (…s) ---
+--- stage downloadNWS begin (attempt 1) ---
+--- stage downloadNWS end (…s) ---
+--- stage installNWS begin (attempt 1) ---
+--- stage installNWS end (…s) ---
+```
+
+Three things to know before reading it:
+
+- **Verification is inside `downloadEngine`**, per spec §4.2 ("stage 2 is complete only
+  when the archive is on disk *and* its checksum matches"). The transfer and the hash are
+  noted separately so the stage can still be split after the fact.
+- **The Rosetta install is not inside `preflight`.** Stage 1 times the automated check
+  only; a prompt-and-install is recorded as a `Rosetta 2 installed in …s` note. It will
+  not appear on this Mac (§2).
+- **A `begin` with no matching `end` is where the run died.** Stages close only on
+  success. There are no retry/resume lines yet — the journal is Task 8.
+
+What is still *not* instrumented, and therefore still needs a human: the inter-event gap
+behind acceptance criterion 1. `StallDetector` is Task 11. `setup.log` carries streamed
+Wine lines with ISO-8601 stamps during stage 4, so the gaps *within* the prefix build can
+be read off it afterwards; the gaps in the other stages still need §6.2 and an eye.
+
+**Caveat on the emission itself.** The brackets are unit-tested where they can be run
+offline (`SetupLogTests`, `EngineManagerTests`), and the plumbing compiles with the log
+reaching all six sites. The end-to-end emission has **not** been observed on a real run —
+this run is what observes it. If `setup.log` is missing or thin, fall back to §6.1 and
+§6.2 and report it; do not abandon the run.
 
 ---
 
@@ -178,13 +217,15 @@ plan. Re-run the timing half after Task 8 lands, when `setup.log` makes it nearl
    System Settings → Privacy & Security → **Open Anyway**, confirm. This is a GUI trust
    decision; there is no supported CLI equivalent, which is the whole reason
    `--quarantine` exists.
-5. **Drive the wizard** and press a stopwatch (or run §6.1's marker command) at each
-   visible transition. The transitions are the only stage boundaries this build exposes.
+5. **Drive the wizard.** Run §6.1's marker command alongside it as a *cross-check* on
+   `setup.log`, not as the primary record — if a mark and a stage boundary disagree by
+   more than a second or two, say so in the write-up rather than picking one.
 6. **Accept the Rosetta prompt if it appears** — it will not on this Mac (§2), and its
    absence is itself a datum worth recording.
 7. **Watch for stalls with a human eye.** Acceptance criterion 1 is "no stage goes more
-   than 10 s without substantive evidence of progress". Until Task 8 instruments this,
-   a person watching the window is the instrument.
+   than 10 s without substantive evidence of progress". `StallDetector` is Task 11, so
+   outside stage 4 (whose streamed Wine lines are timestamped in `setup.log`) a person
+   watching the window is still the instrument.
 8. **Restore the NWS data (§8) and verify inside NWS** — open the app, confirm the
    congregation data and the licence. Only the application can confirm its own data.
 
@@ -199,9 +240,30 @@ plan. Re-run the timing half after Task 8 lands, when `setup.log` makes it nearl
 
 ## 6. Capturing the measurements
 
-### 6.1 Stage boundaries by hand
+### 6.0 Stage boundaries from `setup.log` — the primary source
 
-Start this before the first wizard click; hit Return at each visible transition. It
+Nothing to set up: the app writes it. Watch it live and extract the six durations
+afterwards.
+
+```sh
+RUN=~/openxe-calibration-2026-08-09; mkdir -p "$RUN"
+tail -F ~/Library/Logs/OpenXE/setup.log            # live, in its own window
+
+# after the run — the six durations, in order
+grep -E '^\S+ --- stage .* (begin|end)' ~/Library/Logs/OpenXE/setup.log | tee "$RUN/stages.txt"
+```
+
+Copy the whole `~/Library/Logs/OpenXE/` directory into `$RUN` before any second reset;
+`make fresh` deletes it (§3).
+
+A stage that shows a `begin` and no `end` did not complete. See §4 for the exact shape of
+the file and for what it deliberately does not measure.
+
+### 6.1 Stage boundaries by hand — the cross-check
+
+Kept deliberately: it is the only independent check that the instrumented boundaries sit
+where a user perceives the transitions, and the only record if `setup.log` fails to
+appear. Start it before the first wizard click; hit Return at each visible transition. It
 timestamps into the same directory as the sampler.
 
 ```sh
@@ -214,9 +276,11 @@ done
 Type a label (`engine-download-start`, `unpack-start`, `prefix-start`, `nws-start`,
 `done`) and press Return at each transition.
 
-### 6.2 Filesystem sampler
+### 6.2 Filesystem sampler — the cross-check that measures what the log cannot
 
-Run in the background for the whole session. **`find -P`, hidden files excluded, so it
+Still required, and not superseded by `setup.log`: `expectedPrefixEntries` is a *plateau
+in a file count*, which no stage boundary can give. Run it in the background for the
+whole session. **`find -P`, hidden files excluded, so it
 matches `PrefixEntryCounter.entryCount`'s `FileManager` enumerator with
 `.skipsHiddenFiles` — and, more importantly, so it does not follow `dosdevices/z: -> /`.**
 Verified 2026-08-09: 69 ms over a fully-populated prefix, no traversal of `z:`.
@@ -242,9 +306,10 @@ enumerator does not.
 
 | Measurement | Source | Feeds |
 |---|---|---|
-| Six stage durations | §6.1 marks | `StageWeightTable.builtIn` — `Sources/OpenXECore/SetupStage.swift` |
-| Prefix entries at the moment `wineboot --init` returns, **before** Mono/Gecko/fonts/NWS | §6.2 `prefix_entries` at the `prefix-start`→next-mark plateau | `PrefixProgress.expectedPrefixEntries` — `Sources/OpenXECore/PrefixManager.swift:48`, currently `2027` |
-| Longest gap with no visible change | §6.2 plus human observation | stall threshold (60 s), `PrefixProgress` 4a criterion |
+| Six stage durations | **§6.0 `setup.log`**; §6.1 marks as cross-check | `StageWeightTable.builtIn` — `Sources/OpenXECore/SetupStage.swift` |
+| Engine transfer vs SHA-256 split inside stage 2 | §6.0 `transferred in` / `verified in` notes | nothing yet — recorded so stage 2 stays decomposable |
+| Prefix entries at the moment `wineboot --init` returns, **before** Mono/Gecko/fonts/NWS | §6.2 `prefix_entries` at the plateau, located in time by the `preparePrefix` begin marker | `PrefixProgress.expectedPrefixEntries` — `Sources/OpenXECore/PrefixManager.swift:48`, currently `2027` |
+| Longest gap with no visible change | `setup.log` timestamps within stage 4; §6.2 plus human observation elsewhere | stall threshold (60 s), `PrefixProgress` 4a criterion |
 | Engine archive entries | unchanged unless repinned | `EngineManager.expectedArchiveEntries` = 5,333 |
 
 **Reading `expectedPrefixEntries` correctly.** The constant is defined as "files a
@@ -258,6 +323,10 @@ wrong plateau.
 
 - Stage durations sum to a plausible wall clock and **stage 4 is at or above the ~29 s
   warm lower bound**. Below it means the run was not as cold as claimed.
+- They will sum to **less** than the wall clock, and that is correct: the wizard waits for
+  the user between steps, and `fetchLatest` runs outside any stage. Weights are computed
+  from the six stage durations only — never from the total elapsed — so the user's
+  reading speed cannot enter the weights.
 - Recomputed weights are integers summing to **exactly 100** — enforced by
   `testStageWeightsSumTo100` and `testResolvedWeightsAlwaysSumTo100`.
 - `expectedPrefixEntries` is a clear plateau, not a mid-slope sample. If it lands within
@@ -287,11 +356,14 @@ typo degrades to the defaults rather than to a broken bar.
 3. `make fresh ARGS=--dry-run`, read the list, confirm it names only what §3 says.
 4. Start the sampler (§6.2) and the marker loop (§6.1).
 5. `make fresh ARGS="--quarantine /Applications/OpenXE.app"`, answer `y`.
-6. Open OpenXE, click through Gatekeeper by hand (§5.1 step 4).
+6. Open OpenXE, click through Gatekeeper by hand (§5.1 step 4). Start the `tail -F` on
+   `setup.log` (§6.0) as soon as the app is open.
 7. Drive the wizard, marking each transition.
-8. On completion: stop the sampler, copy `~/Library/Logs/OpenXE/` into the run directory.
+8. On completion: stop the sampler, copy `~/Library/Logs/OpenXE/` into the run directory,
+   and extract the six durations with the §6.0 `grep`.
 9. Restore the NWS data (§8).
-10. Write the numbers up against §6.3, then proceed to plan Task 8.
+10. Write the numbers up against §6.3 — noting any disagreement between `setup.log` and
+    the hand marks — then proceed to plan Task 8 (`SetupJournal`).
 
 ---
 

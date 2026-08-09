@@ -718,7 +718,11 @@ Plus: `make fresh` end-to-end with the notification path exercised; ⌘Q during 
 
 ### 13.4 Cold-machine weight calibration
 
-**Status: deferred by decision — the project is shipping on warm-machine defaults (R2a).** This section is kept as a runnable procedure for whenever a suitable machine is available. It needs no new tooling: `SetupLog` already records per-stage elapsed times (§4.4), which is most of the point of having it.
+**Status: deferred by decision — the project is shipping on warm-machine defaults (R2a).** This section is kept as a runnable procedure for whenever a suitable machine is available.
+
+**Tooling status, corrected 2026-08-09.** The claim "it needs no new tooling: `SetupLog` already records per-stage elapsed times" was false when written: `SetupLog` shipped as a type with no production caller, so a run produced no `setup.log` at all. It is true now, but only because the existing setup path was explicitly instrumented — see `docs/design/specs/2026-08-09-setup-log-instrumentation-design.md`, which adds two methods to `SetupLog` and no new types. Reaching the same timings via `SetupCoordinator` would have required Tasks 8, 9, 14, 15 and 17–18, i.e. the plan's whole back half, which is what the calibration gate sits in front of. `SetupCoordinator` is **Task 14**; Task 8 is `SetupJournal`.
+
+Two limits survive that change and belong in any write-up: retry/resume decisions are not logged (Task 8), and inter-event gaps are not measured outside stage 4 (Task 11).
 
 **Procedure.**
 

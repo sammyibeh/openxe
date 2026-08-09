@@ -13,14 +13,25 @@ public struct EngineDescriptor: Sendable, Equatable, Codable {
     public let sha256: String          // expected archive checksum
     public let wineBinaryName: String  // "wine" (new-wow64 Gcenx) or "wine64" (older CrossOver)
 
+    /// Entries this archive unpacks to, when measured — the denominator for
+    /// stage 3's bar. Optional and advisory: knowing it exactly means reading
+    /// the archive twice, which costs a second full xz decompression pass. nil
+    /// keeps the unpack bar indeterminate with the entry count carrying the
+    /// movement. See `SetupDisplay.unpackFraction` for how a wrong measurement
+    /// degrades. Optional so descriptor.json written by earlier builds still
+    /// decodes.
+    public let expectedUnpackEntries: Int?
+
     public init(id: String, displayName: String, version: String,
-                url: URL, sha256: String, wineBinaryName: String) {
+                url: URL, sha256: String, wineBinaryName: String,
+                expectedUnpackEntries: Int? = nil) {
         self.id = id
         self.displayName = displayName
         self.version = version
         self.url = url
         self.sha256 = sha256
         self.wineBinaryName = wineBinaryName
+        self.expectedUnpackEntries = expectedUnpackEntries
     }
 }
 
@@ -36,7 +47,14 @@ public enum EngineCatalog {
         version: "wine-stable-11.0_1",
         url: URL(string: "https://github.com/Gcenx/macOS_Wine_builds/releases/download/11.0_1/wine-stable-11.0_1-osx64.tar.xz")!,
         sha256: "b50dc50ec7f41d58b115a6b685d4d1315ba3c797bd3aa0f49213f2703cb82388",
-        wineBinaryName: "wine")
+        wineBinaryName: "wine",
+        // Measured, with a stated margin: the instrumented cold run of
+        // 2026-08-09 logged "unpacked 5200 entries" and logs every 200th, so
+        // the true total is 5200...5399. 5400 is the upper bound, which makes
+        // the bar run slightly slow and finish stage 3 near 96-99 % rather
+        // than overshooting. Replace with the exact count when one is
+        // captured; SetupDisplay.unpackFraction degrades safely either way.
+        expectedUnpackEntries: 5400)
 
     /// The engine installed and activated on first run.
     public static let `default` = stock

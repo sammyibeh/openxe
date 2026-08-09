@@ -451,7 +451,19 @@ final class EntryCounter: @unchecked Sendable {
     }
 }
 
-private final class DownloadProgressDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+/// URLSession download-progress bridge for the engine archive fetch.
+///
+/// MUST conform to `URLSessionDownloadDelegate`, not merely
+/// `URLSessionTaskDelegate`. `didWriteData` is a *download*-delegate
+/// requirement; under SE-0160 a Swift method only becomes `@objc` when it
+/// satisfies a requirement of an adopted `@objc` protocol. Declare the
+/// task-only conformance and the method stays invisible to the Objective-C
+/// runtime, `respondsToSelector:` returns false, URLSession never calls it,
+/// and the bar sits at 0 for the whole transfer — with no compiler diagnostic
+/// anywhere. `ProgressDelegateTests` pins the runtime visibility.
+///
+/// Internal rather than private so that test can reach it.
+final class DownloadProgressDelegate: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
     private let alreadyHave: Int64
     private let progress: @Sendable (EngineProgress) -> Void
 
@@ -471,4 +483,11 @@ private final class DownloadProgressDelegate: NSObject, URLSessionTaskDelegate, 
         let total = Double(alreadyHave + totalBytesExpectedToWrite)
         progress(.downloading(fraction: done / total))
     }
+
+    /// Required by the protocol; never invoked. `URLSession.download(for:delegate:)`
+    /// is completion-handler-backed, so the session hands the file to the
+    /// awaiting caller instead of calling this. Its only job is to make the
+    /// download-delegate conformance — and therefore `didWriteData` — legal.
+    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask,
+                    didFinishDownloadingTo location: URL) {}
 }

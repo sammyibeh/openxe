@@ -378,7 +378,12 @@ public enum NWSError: Error, LocalizedError {
 }
 
 /// URLSession download-progress bridge for the installer fetch.
-private final class NWSDownloadDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+///
+/// MUST conform to `URLSessionDownloadDelegate` — see the note on
+/// `DownloadProgressDelegate` in EngineManager.swift for why a task-only
+/// conformance silently disables `didWriteData`. Internal so the regression
+/// test can reach it.
+final class NWSDownloadDelegate: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
     private let progress: @Sendable (NWSProgress) -> Void
     init(progress: @escaping @Sendable (NWSProgress) -> Void) { self.progress = progress }
 
@@ -390,4 +395,9 @@ private final class NWSDownloadDelegate: NSObject, URLSessionTaskDelegate, @unch
         }
         progress(.downloading(fraction: Double(totalBytesWritten) / Double(totalBytesExpectedToWrite)))
     }
+
+    /// Required by the protocol; never invoked on a completion-handler-backed
+    /// task. Exists so the download-delegate conformance is legal.
+    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask,
+                    didFinishDownloadingTo location: URL) {}
 }

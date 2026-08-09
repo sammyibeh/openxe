@@ -386,6 +386,11 @@ final class WizardWindowController: NSObject, NSWindowDelegate {
             setProgress(-1); setStatus("Verifying the download…")
         case .extracting:
             setProgress(-1); setStatus("Unpacking the Windows environment…")
+        case .unpacking(let entries):
+            // No honest denominator for the archive, so the bar stays
+            // indeterminate and the count carries the movement.
+            setProgress(-1)
+            setStatus("Unpacking the Windows environment… \(entries) files")
         }
     }
 

@@ -48,6 +48,12 @@ public enum EngineProgress: Sendable {
     case downloading(fraction: Double) // 0...1; -1 when total size unknown
     case verifying
     case extracting
+    /// Entries unpacked so far. Deliberately a count, not a fraction: the
+    /// archive's entry total is not known until the archive has been read, so
+    /// there is no honest denominator. Drives the status line while the bar
+    /// stays indeterminate — movement we can prove, rather than a bar position
+    /// we would have to invent.
+    case unpacking(entries: Int)
 }
 
 public enum EngineError: Error, LocalizedError {
@@ -234,7 +240,9 @@ public final class EngineManager: Sendable {
                 if let stage2 { log?.endStage(.downloadEngine, startedAt: stage2) }
                 progress(.extracting)
                 let stage3 = log?.startStage(.unpackEngine)
-                try extractAndInstall(descriptor, archive: partial, log: log, onEntry: onEntry)
+                try extractAndInstall(descriptor, archive: partial, log: log,
+                                      onEntry: Self.unpackReporter(forwarding: onEntry,
+                                                                   to: progress))
                 if let stage3 { log?.endStage(.unpackEngine, startedAt: stage3) }
                 try? fm.removeItem(at: partial)
                 if activeEngineID == nil { try setActive(descriptor.id) }
@@ -281,6 +289,32 @@ public final class EngineManager: Sendable {
             try await install(def, log: log, progress: progress)
         }
         try setActive(def.id)
+    }
+
+    // MARK: unpack reporting
+
+    /// One event per this many tar entries. `tar -xvf` on the engine archive
+    /// emits thousands of lines in a few seconds and every event costs a hop
+    /// to the main actor; the user cannot read a counter faster than this
+    /// anyway.
+    static let unpackReportInterval = 25
+
+    /// Bridges the tar entry stream onto the `EngineProgress` channel.
+    ///
+    /// Stage 3 published nothing because `ensureDefaultActive` never supplied
+    /// an `onEntry` and so `extractAndInstall`'s counter fed a nil closure.
+    /// Rather than thread a second closure through every call site — leaving
+    /// the surface to interleave two channels for one stage — `install`
+    /// synthesizes the reporter from the progress closure it already has. Any
+    /// caller-supplied `onEntry` still receives every entry, unthrottled.
+    static func unpackReporter(forwarding onEntry: (@Sendable (Int) -> Void)?,
+                               to progress: @escaping @Sendable (EngineProgress) -> Void)
+        -> @Sendable (Int) -> Void {
+        { n in
+            onEntry?(n)
+            // n == 1 so a small archive still reports at least once.
+            if n == 1 || n % unpackReportInterval == 0 { progress(.unpacking(entries: n)) }
+        }
     }
 
     // MARK: download

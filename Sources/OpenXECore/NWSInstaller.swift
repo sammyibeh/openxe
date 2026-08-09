@@ -261,19 +261,23 @@ public final class NWSInstaller: Sendable {
         request.setValue("OpenXE", forHTTPHeaderField: "User-Agent")
         request.timeoutInterval = 600
 
-        let delegate = NWSDownloadDelegate(progress: progress)
-        let tempURL: URL, response: URLResponse
+        // ProgressiveDownload, not `URLSession.shared.download(for:delegate:)`:
+        // the async convenience delivers ZERO didWriteData callbacks, so this
+        // bar sat at 0 % for the entire 81 s transfer. See ProgressiveDownload.
+        let downloaded: DownloadedFile
         do {
-            (tempURL, response) = try await URLSession.shared.download(for: request, delegate: delegate)
+            downloaded = try await ProgressiveDownload.fetch(request) { counts in
+                progress(.downloading(fraction: counts.fraction ?? -1))
+            }
         } catch {
             throw NWSError.network(error.localizedDescription)
         }
-        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
-            let code = (response as? HTTPURLResponse)?.statusCode ?? -1
-            throw NWSError.network("download HTTP \(code)")
+        guard (200..<300).contains(downloaded.response.statusCode) else {
+            try? fm.removeItem(at: downloaded.url)
+            throw NWSError.network("download HTTP \(downloaded.response.statusCode)")
         }
         try? fm.removeItem(at: destination)
-        try fm.moveItem(at: tempURL, to: destination)
+        try fm.moveItem(at: downloaded.url, to: destination)
 
         // Integrity: exact size when the API told us; otherwise a sanity floor.
         let actual = (try? fm.attributesOfItem(atPath: destination.path)[.size] as? Int64)
@@ -377,27 +381,6 @@ public enum NWSError: Error, LocalizedError {
     }
 }
 
-/// URLSession download-progress bridge for the installer fetch.
-///
-/// MUST conform to `URLSessionDownloadDelegate` — see the note on
-/// `DownloadProgressDelegate` in EngineManager.swift for why a task-only
-/// conformance silently disables `didWriteData`. Internal so the regression
-/// test can reach it.
-final class NWSDownloadDelegate: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
-    private let progress: @Sendable (NWSProgress) -> Void
-    init(progress: @escaping @Sendable (NWSProgress) -> Void) { self.progress = progress }
-
-    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask,
-                    didWriteData bytesWritten: Int64, totalBytesWritten: Int64,
-                    totalBytesExpectedToWrite: Int64) {
-        guard totalBytesExpectedToWrite > 0 else {
-            progress(.downloading(fraction: -1)); return
-        }
-        progress(.downloading(fraction: Double(totalBytesWritten) / Double(totalBytesExpectedToWrite)))
-    }
-
-    /// Required by the protocol; never invoked on a completion-handler-backed
-    /// task. Exists so the download-delegate conformance is legal.
-    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask,
-                    didFinishDownloadingTo location: URL) {}
-}
+// The installer download's URLSession delegate now lives in
+// ProgressiveDownload. `NWSDownloadDelegate` was, like its engine twin,
+// correct in isolation and never invoked.

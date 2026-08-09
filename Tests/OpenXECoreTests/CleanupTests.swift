@@ -788,7 +788,8 @@ final class CleanupTests: XCTestCase {
                           "the removal of \(target.url.path) is not in the log")
         }
         // What happened to the handler registration, and the outcome.
-        XCTAssertTrue(text.contains("unregistered the .exe handler: /Applications/OpenXE.app"))
+        XCTAssertTrue(
+            text.contains("asked LaunchServices to drop the .exe handler: /Applications/OpenXE.app"))
         XCTAssertTrue(text.contains("outcome: removed=\(plan.targets.count) skipped=0"))
     }
 
@@ -907,6 +908,53 @@ final class CleanupTests: XCTestCase {
         XCTAssertTrue(text.contains(translocated))
     }
 
+    // MARK: the .exe handler claim
+    //
+    // `lsregister -u` ran and the log said "unregistered the .exe handler". Four
+    // minutes later the bundle was registered again and still claiming
+    // com.microsoft.windows-executable: LaunchServices rescans /Applications and
+    // re-reads CFBundleDocumentTypes. The registration coming back is not the
+    // defect — the log asserting a permanence the system undoes is.
+
+    func testTheHandlerLogLineDoesNotClaimAnUnregistrationThatDoesNotStick() {
+        let caveat = LaunchServicesUnregistration.doesNotPersistNote
+        let plain = LaunchServicesUnregistration.unregistered(path: "/Applications/OpenXE.app")
+        XCTAssertFalse(plain.logLine.hasPrefix("unregistered the .exe handler"),
+                       "the log states as fact something LaunchServices undoes: \(plain.logLine)")
+        XCTAssertTrue(plain.logLine.hasPrefix("asked LaunchServices to drop the .exe handler"))
+        XCTAssertTrue(plain.logLine.contains("/Applications/OpenXE.app"))
+        XCTAssertTrue(plain.logLine.contains(caveat), plain.logLine)
+
+        let translocated = LaunchServicesUnregistration.unregisteredAfterTranslocation(
+            real: "/Applications/OpenXE.app",
+            translocated: "/private/var/folders/z4/T/AppTranslocation/ABC/d/OpenXE.app")
+        XCTAssertFalse(translocated.logLine.hasPrefix("unregistered"))
+        XCTAssertTrue(translocated.logLine.contains(caveat), translocated.logLine)
+
+        // The refusals never claimed anything happened, so they carry no caveat
+        // and stay as loud as they were.
+        for refused: LaunchServicesUnregistration in
+            [.noBundle, .refusedUnresolvedTranslocation(translocated: "/tmp/x/OpenXE.app")] {
+            XCTAssertTrue(refused.logLine.hasPrefix("DID NOT unregister the .exe handler"))
+            XCTAssertFalse(refused.logLine.contains(caveat))
+        }
+
+        // And the caveat says why, not just that.
+        XCTAssertTrue(caveat.contains("Info.plist"))
+        XCTAssertTrue(caveat.contains("Trash"))
+    }
+
+    /// The same truth, in the user's words, next to the instruction it depends on.
+    func testTheUserIsToldTheHandlerClaimOutlivesTheRemoval() {
+        let text = SetupCopy.cleanupHandlerUntilTrashed
+        XCTAssertTrue(text.hasPrefix("Until you do"),
+                      "this line only makes sense after the drag-to-Trash instruction")
+        XCTAssertTrue(SetupCopy.cleanupDragToTrash.contains("Trash"))
+        XCTAssertTrue(text.contains("OpenXE"))
+        XCTAssertFalse(text.lowercased().contains("launchservices"), text)
+        XCTAssertFalse(text.contains(".exe"), text)
+    }
+
     /// Logging is diagnostic, not load-bearing: a removal must still work when no
     /// log could be opened at all.
     func testRemovalWorksWithoutALog() throws {
@@ -995,7 +1043,8 @@ final class CleanupTests: XCTestCase {
         // No shell, no paths, no jargon in anything the user reads.
         for text in [SetupCopy.cleanupExplanation, SetupCopy.cleanupNotAReset,
                      SetupCopy.cleanupKeepDataCheckbox, SetupCopy.cleanupKeepDataDefaultNote,
-                     SetupCopy.cleanupDeleteDataWarning, SetupCopy.cleanupDragToTrash] {
+                     SetupCopy.cleanupDeleteDataWarning, SetupCopy.cleanupDragToTrash,
+                     SetupCopy.cleanupHandlerUntilTrashed, SetupCopy.cleanupItemLauncherFolder] {
             XCTAssertFalse(text.contains("~/"), text)
             XCTAssertFalse(text.contains("/Library"), text)
             XCTAssertFalse(text.lowercased().contains("wineserver"), text)

@@ -458,11 +458,14 @@ public enum CleanupError: Error, LocalizedError {
 
 /// What the `lsregister -u` step did, and to which path.
 ///
-/// Removal's last act is to stop OpenXE being the handler for `.exe` files. That
-/// is a path-addressed operation, and under App Translocation the path
-/// `Bundle.main` reports is not the installed bundle — so this decision is made
-/// from a resolved `BundleLocation`, in a pure function, and reported back to the
-/// runner so it lands in the log.
+/// Removal's last act is to ask LaunchServices to stop treating OpenXE as the
+/// handler for `.exe` files. That is a path-addressed operation, and under App
+/// Translocation the path `Bundle.main` reports is not the installed bundle — so
+/// this decision is made from a resolved `BundleLocation`, in a pure function,
+/// and reported back to the runner so it lands in the log.
+///
+/// "Asked" is deliberate. The request is best-effort and LaunchServices undoes it
+/// while the bundle remains installed; see `doesNotPersistNote`.
 public enum LaunchServicesUnregistration: Sendable, Equatable {
     case unregistered(path: String)
     /// Unregistered the installed copy while running translocated.
@@ -496,14 +499,32 @@ public enum LaunchServicesUnregistration: Sendable, Equatable {
         }
     }
 
+    /// Why an apparently successful `lsregister -u` does not stick.
+    ///
+    /// The `.exe` claim is declared by `CFBundleDocumentTypes` inside the
+    /// installed bundle. LaunchServices rescans `/Applications` and re-reads it —
+    /// observed four minutes after a real removal, with the bundle registered
+    /// again and still claiming `com.microsoft.windows-executable`. The
+    /// unregister is still worth doing (it drops the claim for now, and there is
+    /// no user-level binding in `com.apple.launchservices.secure.plist` to
+    /// outlive it), but the log must not assert a permanence the system undoes.
+    /// Removing the bundle is what actually drops the claim, which is what the
+    /// user is already told to do — see `SetupCopy.cleanupDragToTrash`.
+    public static let doesNotPersistNote =
+        "this does not persist: LaunchServices re-registers the bundle from its own "
+        + "Info.plist while OpenXE is still installed, so the claim returns until the "
+        + "app itself is moved to the Trash"
+
     /// One line for setup.log. Diagnostic, not user-facing copy.
     public var logLine: String {
         switch self {
         case .unregistered(let path):
-            return "unregistered the .exe handler: \(path)"
+            return "asked LaunchServices to drop the .exe handler: \(path) — "
+                 + Self.doesNotPersistNote
         case .unregisteredAfterTranslocation(let real, let translocated):
-            return "unregistered the .exe handler: \(real) "
-                 + "(running translocated from \(translocated))"
+            return "asked LaunchServices to drop the .exe handler: \(real) "
+                 + "(running translocated from \(translocated)) — "
+                 + Self.doesNotPersistNote
         case .refusedUnresolvedTranslocation(let translocated):
             return "DID NOT unregister the .exe handler: running translocated from "
                  + "\(translocated) and the installed bundle path could not be resolved"

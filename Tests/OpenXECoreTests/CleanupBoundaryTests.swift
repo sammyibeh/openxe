@@ -35,7 +35,7 @@ final class CleanupBoundaryTests: XCTestCase {
     func testRunnerRefusesWithoutASandbox() {
         let (planner, home) = liveSharpEdges()
         let runner = CleanupRunner(
-            planner: planner, paths: planner.paths, home: home, sandbox: nil,
+            planner: planner, paths: planner.paths, home: home, sandbox: nil, log: nil,
             shutdownWineserver: { XCTFail("must not shut down the real wineserver") },
             unregisterFromLaunchServices: {
                 XCTFail("must not touch LaunchServices")
@@ -60,7 +60,7 @@ final class CleanupBoundaryTests: XCTestCase {
             .appendingPathComponent("openxe-not-really-\(UUID().uuidString)", isDirectory: true)
         let runner = CleanupRunner(
             planner: planner, paths: planner.paths, home: home, sandbox: fakeSandbox,
-            shutdownWineserver: { XCTFail("must not shut down the real wineserver") },
+            log: nil, shutdownWineserver: { XCTFail("must not shut down the real wineserver") },
             unregisterFromLaunchServices: {
                 XCTFail("must not touch LaunchServices")
                 return .noBundle

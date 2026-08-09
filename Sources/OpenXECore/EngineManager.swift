@@ -215,17 +215,35 @@ public final class EngineManager: Sendable {
         let partial = paths.engineVersions.appendingPathComponent("download-\(descriptor.id).partial")
 
         var lastError: EngineError?
-        for _ in 0..<2 { // one automatic retry on checksum mismatch (spec §6)
+        for attempt in 1...2 { // one automatic retry on checksum mismatch (spec §6)
+            // Stage 2 spans transfer AND verification: spec §4.2 makes the
+            // checksum the terminal act of the download stage, not the opening
+            // act of the unpack. The two halves are noted separately so the
+            // calibration can still split them.
+            let stage2 = log?.startStage(.downloadEngine, attempt: attempt)
+            let transferStart = DispatchTime.now()
             try await download(descriptor, to: partial, progress: progress)
+            log?.note("engine archive transferred", since: transferStart)
+
             progress(.verifying)
+            let verifyStart = DispatchTime.now()
             let actual = try FileHasher.sha256Hex(of: partial)
+            log?.note("engine archive sha256 verified", since: verifyStart)
+
             if actual == descriptor.sha256 {
+                if let stage2 { log?.endStage(.downloadEngine, startedAt: stage2) }
                 progress(.extracting)
+                let stage3 = log?.startStage(.unpackEngine)
                 try extractAndInstall(descriptor, archive: partial, log: log, onEntry: onEntry)
+                if let stage3 { log?.endStage(.unpackEngine, startedAt: stage3) }
                 try? fm.removeItem(at: partial)
                 if activeEngineID == nil { try setActive(descriptor.id) }
                 return
             }
+            // Stage 2 failed: its `begin` marker stays unterminated on purpose,
+            // and attempt 2 opens a new one.
+            log?.note("checksum mismatch (expected \(descriptor.sha256.prefix(12))…, "
+                      + "got \(actual.prefix(12))…); re-downloading")
             lastError = .checksumMismatch(expected: descriptor.sha256, actual: actual)
             try? fm.removeItem(at: partial) // poisoned artifact; start clean
         }
@@ -239,21 +257,28 @@ public final class EngineManager: Sendable {
     public func installLocalArchive(_ descriptor: EngineDescriptor, archive: URL,
                                     log: SetupLog? = nil,
                                     onEntry: (@Sendable (Int) -> Void)? = nil) throws {
+        let verifyStart = DispatchTime.now()
         let actual = try FileHasher.sha256Hex(of: archive)
+        log?.note("engine archive sha256 verified", since: verifyStart)
         guard actual == descriptor.sha256 else {
+            log?.note("checksum mismatch (expected \(descriptor.sha256.prefix(12))…, "
+                      + "got \(actual.prefix(12))…)")
             throw EngineError.checksumMismatch(expected: descriptor.sha256, actual: actual)
         }
+        let stage3 = log?.startStage(.unpackEngine)
         try extractAndInstall(descriptor, archive: archive, log: log, onEntry: onEntry)
+        if let stage3 { log?.endStage(.unpackEngine, startedAt: stage3) }
         if activeEngineID == nil { try setActive(descriptor.id) }
     }
 
     /// Convenience for the first-run/launch path: ensure the default engine is
-    /// installed and active.
-    public func ensureDefaultActive(progress: @escaping @Sendable (EngineProgress) -> Void) async throws {
+    /// installed and active. `log` carries the setup narrative (stages 2 and 3).
+    public func ensureDefaultActive(log: SetupLog? = nil,
+                                    progress: @escaping @Sendable (EngineProgress) -> Void) async throws {
         if isActiveInstalled { return }
         let def = EngineCatalog.default
         if !isInstalled(def.id) {
-            try await install(def, progress: progress)
+            try await install(def, log: log, progress: progress)
         }
         try setActive(def.id)
     }

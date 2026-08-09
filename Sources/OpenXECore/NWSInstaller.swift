@@ -222,27 +222,36 @@ public final class NWSInstaller: Sendable {
     /// on-disk installer path. `expectedSize == 0` (unknown, e.g. the vendor
     /// fallback path) skips the exact-size check but still requires a plausibly
     /// large file.
-    public func download(_ release: Release,
+    public func download(_ release: Release, log: SetupLog? = nil,
                          progress: @escaping @Sendable (NWSProgress) -> Void) async throws -> URL {
-        try await download(from: release.downloadURL,
-                           expectedSize: release.size,
-                           fileName: release.assetName,
-                           progress: progress)
+        log?.note("downloading New World Scheduler \(release.tag) (\(release.size) bytes)")
+        return try await download(from: release.downloadURL,
+                                  expectedSize: release.size,
+                                  fileName: release.assetName,
+                                  log: log,
+                                  progress: progress)
     }
 
     /// Download via the vendor's fallback endpoint (follows the redirect to the
     /// official GitHub asset). Used when the GitHub API is blocked/rate-limited,
     /// so the exact size is unknown; a Content-Length sanity floor still applies.
     public func downloadViaFallback(
+        log: SetupLog? = nil,
         progress: @escaping @Sendable (NWSProgress) -> Void) async throws -> URL {
-        try await download(from: Self.vendorFallbackDownload,
-                           expectedSize: 0,
-                           fileName: "NWS-Desktop-Setup.exe",
-                           progress: progress)
+        log?.note("downloading New World Scheduler via the vendor fallback link")
+        return try await download(from: Self.vendorFallbackDownload,
+                                  expectedSize: 0,
+                                  fileName: "NWS-Desktop-Setup.exe",
+                                  log: log,
+                                  progress: progress)
     }
 
     private func download(from url: URL, expectedSize: Int64, fileName: String,
+                          log: SetupLog? = nil,
                           progress: @escaping @Sendable (NWSProgress) -> Void) async throws -> URL {
+        // Stage 5 covers transfer AND the size check: an installer that fails
+        // verification has not been downloaded, in the sense that matters.
+        let stage5 = log?.startStage(.downloadNWS)
         let fm = FileManager.default
         try fm.createDirectory(at: downloadDirectory, withIntermediateDirectories: true)
         let destination = downloadDirectory.appendingPathComponent(fileName)
@@ -280,6 +289,7 @@ public final class NWSInstaller: Sendable {
                 throw NWSError.sizeMismatch(expected: 0, actual: actual)
             }
         }
+        if let stage5 { log?.endStage(.downloadNWS, startedAt: stage5) }
         return destination
     }
 
@@ -290,16 +300,19 @@ public final class NWSInstaller: Sendable {
     /// the prefix is already ready (the wizard's environment step guarantees it).
     /// Idempotent: re-running over an existing install upgrades in place; it
     /// never wipes the prefix (respects the PrefixManager data-loss fix).
-    public func install(installerAt installer: URL,
+    public func install(installerAt installer: URL, log: SetupLog? = nil,
                         progress: @escaping @Sendable (NWSProgress) -> Void) async throws {
         progress(.installing)
+        let stage6 = log?.startStage(.installNWS)
         let env = WineEnvironment.build(engineCurrent: paths.engineCurrent, prefix: paths.prefix)
         let args = Self.innoSilentArguments(installerPath: installer.path)
-        let log = try? openInstallLog()
-        defer { try? log?.close() }
+        // Two different logs: `wineLog` is the verbatim Wine transcript in
+        // wine.log; `log` is the setup narrative. Never the same file.
+        let wineLog = try? openInstallLog()
+        defer { try? wineLog?.close() }
 
         let result = try Subprocess.run(engine.activeWineBinary, arguments: args,
-                                        environment: env, timeout: 1200, logHandle: log)
+                                        environment: env, timeout: 1200, logHandle: wineLog)
 
         progress(.verifying)
         guard let exe = installedExe else {
@@ -307,6 +320,7 @@ public final class NWSInstaller: Sendable {
                                          detail: String(result.output.suffix(500)))
         }
         _ = exe
+        if let stage6 { log?.endStage(.installNWS, startedAt: stage6) }
     }
 
     /// Remove the downloaded installer (called after a successful install so

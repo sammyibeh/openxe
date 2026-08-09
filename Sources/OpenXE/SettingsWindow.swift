@@ -16,6 +16,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
     private let enginePopup = NSPopUpButton(frame: .zero, pullsDown: false)
     private var installedEngineIDs: [String] = []
     private var appConfigWindow: AppConfigWindowController?
+    private var cleanupWindow: CleanupWindowController?
 
     init(engine: EngineManager, prefixManager: PrefixManager, runner: Runner,
          paths: OpenXEPaths, onSetUp: @escaping () -> Void, onClose: @escaping () -> Void) {
@@ -66,9 +67,14 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         reset.isEnabled = prefixManager.isReady
         let removeLaunchers = button("Remove Generated Launchers", #selector(removeGeneratedLaunchers))
         let perApp = button("Per-App Settings…", #selector(openAppConfig))
+        // Sits below a separator and away from Reset: the two are one careless
+        // click apart otherwise, and only one of them is undoable.
+        let separator = NSBox()
+        separator.boxType = .separator
+        let removeAll = button(SetupCopy.cleanupMenuTitle, #selector(removeEverything))
 
         let stack = NSStackView(views: [engineLabel, enginePopup, setUp, perApp, openC, shutdown,
-                                        reset, removeLaunchers, statusLabel])
+                                        reset, removeLaunchers, separator, removeAll, statusLabel])
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 10
@@ -137,6 +143,14 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         appConfigWindow?.show()
     }
 
+    @objc private func removeEverything() {
+        if cleanupWindow == nil {
+            cleanupWindow = CleanupWindowController(
+                paths: paths, onClose: { [weak self] in self?.cleanupWindow = nil })
+        }
+        cleanupWindow?.show()
+    }
+
     @objc private func removeGeneratedLaunchers() {
         statusLabel.stringValue = "Removing launchers…"
         Task {
@@ -152,8 +166,10 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         alert.alertStyle = .critical
         alert.messageText = "Reset the Windows environment?"
         alert.informativeText = "This deletes the entire C: drive, the Windows registry, and every "
-            + "installed Windows program. Files in your Mac's Documents, Downloads, and Desktop "
-            + "folders are not affected. This cannot be undone."
+            + "installed Windows program, including your New World Scheduler information. Files "
+            + "in your Mac's Documents, Downloads, and Desktop folders are not affected. This "
+            + "cannot be undone.\n\nIf you want to remove OpenXE altogether and keep a copy of "
+            + "your New World Scheduler information, use \"\(SetupCopy.cleanupMenuTitle)\" instead."
         alert.addButton(withTitle: "Reset")
         alert.addButton(withTitle: "Cancel")
         guard alert.runModal() == .alertFirstButtonReturn else { return }

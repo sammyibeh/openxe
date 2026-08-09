@@ -250,6 +250,19 @@ public struct CleanupPlanner: Sendable {
         self.launcherDirectories = launcherDirectories
     }
 
+    /// The production wiring. Planning is read-only, so unlike the runner this
+    /// is safe to construct anywhere — including under test, where
+    /// `CleanupBoundaryTests` uses it to prove the allowlist holds on a real Mac.
+    public static func live(paths: OpenXEPaths) -> CleanupPlanner {
+        let fm = FileManager.default
+        return CleanupPlanner(
+            paths: paths,
+            home: fm.homeDirectoryForCurrentUser,
+            library: fm.urls(for: .libraryDirectory, in: .userDomainMask)[0],
+            bundleIdentifier: Bundle.main.bundleIdentifier ?? "dev.openxe.OpenXE",
+            launcherDirectories: LauncherManager.candidateDirectories)
+    }
+
     /// Every root the runner is permitted to delete under. Anything not covered
     /// by this list is rejected by `CleanupSafety.isDeletable`.
     public var allowedRoots: [URL] {
@@ -523,6 +536,35 @@ public struct CleanupRunner: Sendable {
         return PreservedData(destination: destination, itemsCopied: copiedItems,
                              filesCopied: files, registryValue: registryValue,
                              bytes: CleanupSafety.size(of: destination))
+    }
+
+    /// The production wiring, in one place so the Shell holds no path logic.
+    ///
+    /// `sandbox` is nil here by design: this is the live configuration, and a
+    /// test that reaches it is refused outright by `assertBoundary`.
+    public static func live(paths: OpenXEPaths, bundleURL: URL?) -> CleanupRunner {
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        let planner = CleanupPlanner.live(paths: paths)
+        let prefix = paths.prefix
+        let wineserver = paths.wineserverBinary
+        let engineCurrent = paths.engineCurrent
+        return CleanupRunner(
+            planner: planner, paths: paths, home: home, sandbox: nil,
+            shutdownWineserver: {
+                // Ask politely first — a clean shutdown flushes the registry —
+                // then reap by prefix-scoped PID, which also catches a server
+                // whose socket has been reaped (see WineServerHousekeeping).
+                let env = WineEnvironment.build(engineCurrent: engineCurrent, prefix: prefix)
+                _ = try? Subprocess.run(wineserver, arguments: ["-k"], environment: env,
+                                        timeout: 30, captureOutput: false)
+                WineServerHousekeeping.reapAllServers(forPrefix: prefix)
+            },
+            unregisterFromLaunchServices: {
+                guard let bundleURL else { return }
+                _ = try? Subprocess.run(
+                    URL(fileURLWithPath: "/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/Support/lsregister"),
+                    arguments: ["-u", bundleURL.path], timeout: 60, captureOutput: false)
+            })
     }
 
     /// `New World Scheduler Data (saved by OpenXE 2026-08-09)`, with a numeric

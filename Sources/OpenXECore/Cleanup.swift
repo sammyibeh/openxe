@@ -512,12 +512,21 @@ public struct CleanupRunner: Sendable {
         for name in CleanupPlanner.preserveNames {
             let source = dataDir.appendingPathComponent(name)
             guard fm.fileExists(atPath: source.path) else { continue }
+            // A symlink standing where a preserve target should be is not data
+            // we can rescue, and following it would leave the prefix entirely.
+            // This is the only case where "present but nothing copied" is
+            // correct, so it is excluded here rather than inferred below.
+            guard !CleanupSafety.isSymbolicLink(atPath: source.path) else { continue }
             let n = try CleanupSafety.copySkippingSymlinks(
                 from: source, to: destination.appendingPathComponent(name))
-            if n > 0 {
-                copiedItems.append(name)
-                files += n
-            }
+            files += n
+            // Recorded because the source was *there*, not because it had
+            // content. `Attachments` and `MyTemplates` are legitimately empty
+            // until the user creates something, and an empty folder that is
+            // silently dropped tells the user their data was missing when it
+            // was not. `copySkippingSymlinks` has already recreated the
+            // directory — including any empty subdirectories inside it.
+            copiedItems.append(name)
         }
 
         let registryValue = NWSRegistryCapture.environmentValue(

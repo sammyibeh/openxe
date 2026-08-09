@@ -113,6 +113,9 @@ public final class PrefixManager: Sendable {
     public func ensurePrefix(log: SetupLog? = nil,
                              progress: (@Sendable (PrefixProgress) -> Void)? = nil) throws {
         guard !isReady else { return }
+        // Stage 4 opens only when there is real work: an already-ready prefix
+        // must not put a zero-second stage into the calibration log.
+        let stage4 = log?.startStage(.preparePrefix)
         let fm = FileManager.default
 
         // A prefix left over from a different engine must be wiped first —
@@ -240,6 +243,10 @@ public final class PrefixManager: Sendable {
         let engineID = engine.activeEngineID ?? "unknown"
         try Data("engine=\(engineID)\n".utf8)
             .write(to: paths.prefix.appendingPathComponent(Self.readyMarker))
+
+        // Closed only here, on success. A `begin` with no `end` is how the log
+        // says the prefix build is where the run died.
+        if let stage4 { log?.endStage(.preparePrefix, startedAt: stage4) }
     }
 
     /// Destructive: shuts the environment down and deletes the prefix.

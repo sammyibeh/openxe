@@ -191,4 +191,74 @@ final class EngineManagerTests: XCTestCase {
         XCTAssertGreaterThan(EngineManager.expectedArchiveEntries, 5_324,
                              "must be the measured archive count, not the installed-tree count")
     }
+
+    // MARK: setup.log instrumentation (instrumentation spec §3.3)
+
+    /// A minimal Gcenx-shaped engine archive, built locally. No network.
+    /// Returns the archive URL and its real SHA-256.
+    private func makeEngineArchive(in dir: URL) throws -> (URL, String) {
+        let fm = FileManager.default
+        let staging = dir.appendingPathComponent("src")
+        let bin = staging.appendingPathComponent("Wine.app/Contents/Resources/wine/bin")
+        try fm.createDirectory(at: bin, withIntermediateDirectories: true)
+        fm.createFile(atPath: bin.appendingPathComponent("wine").path,
+                      contents: Data("#!/bin/sh\n".utf8), attributes: [.posixPermissions: 0o755])
+        let archive = dir.appendingPathComponent("engine.tar.gz")
+        let tar = try Subprocess.run(URL(fileURLWithPath: "/usr/bin/tar"),
+                                     arguments: ["-czf", archive.path, "-C", staging.path, "."],
+                                     timeout: 60)
+        XCTAssertEqual(tar.status, 0, "fixture tar failed: \(tar.output)")
+        return (archive, try FileHasher.sha256Hex(of: archive))
+    }
+
+    /// The one stage bracket that is fully exercisable offline. `unpackEngine`
+    /// wraps `extractAndInstall`, which the network `install()` path shares, and
+    /// the verify note is what lets the calibration split stage 2.
+    func testUnpackEngineStageIsBracketedInTheSetupLog() throws {
+        let fm = FileManager.default
+        let dir = fm.temporaryDirectory.appendingPathComponent("openxe-unpacklog-\(UUID().uuidString)")
+        try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: dir) }
+
+        let (archive, sha) = try makeEngineArchive(in: dir)
+        let paths = OpenXEPaths(root: dir.appendingPathComponent("root"))
+        let logURL = dir.appendingPathComponent("setup.log")
+        let log = try SetupLog(url: logURL)
+        let descriptor = EngineDescriptor(id: "fixture-engine", displayName: "Fixture",
+                                          version: "fixture-1", url: URL(string: "file://\(archive.path)")!,
+                                          sha256: sha, wineBinaryName: "wine")
+
+        try EngineManager(paths: paths).installLocalArchive(descriptor, archive: archive, log: log)
+        log.close()
+
+        let text = try String(contentsOf: logURL, encoding: .utf8)
+        XCTAssertTrue(text.contains("stage unpackEngine begin (attempt 1)"), text)
+        XCTAssertTrue(text.contains("stage unpackEngine end"), text)
+        XCTAssertTrue(text.contains("engine archive sha256 verified in"), text)
+    }
+
+    /// A checksum failure is a stage-2 failure: the unpack stage never opens, so
+    /// a reader of setup.log cannot mistake it for one that started and hung.
+    func testChecksumMismatchOpensNoUnpackStage() throws {
+        let fm = FileManager.default
+        let dir = fm.temporaryDirectory.appendingPathComponent("openxe-unpackbad-\(UUID().uuidString)")
+        try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: dir) }
+
+        let (archive, _) = try makeEngineArchive(in: dir)
+        let paths = OpenXEPaths(root: dir.appendingPathComponent("root"))
+        let logURL = dir.appendingPathComponent("setup.log")
+        let log = try SetupLog(url: logURL)
+        let descriptor = EngineDescriptor(id: "fixture-engine", displayName: "Fixture",
+                                          version: "fixture-1", url: URL(string: "file://\(archive.path)")!,
+                                          sha256: String(repeating: "b", count: 64), wineBinaryName: "wine")
+
+        XCTAssertThrowsError(try EngineManager(paths: paths)
+            .installLocalArchive(descriptor, archive: archive, log: log))
+        log.close()
+
+        let text = try String(contentsOf: logURL, encoding: .utf8)
+        XCTAssertFalse(text.contains("stage unpackEngine"), text)
+        XCTAssertTrue(text.contains("checksum mismatch"), text)
+    }
 }

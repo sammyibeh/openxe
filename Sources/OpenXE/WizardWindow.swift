@@ -158,23 +158,21 @@ final class WizardWindowController: NSObject, NSWindowDelegate {
         statusLabel.textColor = isError ? .systemRed : .secondaryLabelColor
     }
 
-    private func setBusy(_ busy: Bool, indeterminate: Bool = true) {
+    private func setBusy(_ busy: Bool, bar: BarState = .indeterminate) {
         working = busy
         progressBar.isHidden = !busy
         primaryButton.isEnabled = !busy
         secondaryButton.isEnabled = !busy
         backButton.isEnabled = !busy && step != .welcome
-        if busy {
-            progressBar.isIndeterminate = indeterminate
-            if indeterminate { progressBar.startAnimation(nil) }
-        } else {
-            progressBar.stopAnimation(nil)
-        }
+        if busy { progressBar.apply(bar) } else { progressBar.stopAnimation(nil) }
     }
 
-    private func setProgress(_ fraction: Double) {
-        if fraction < 0 { progressBar.isIndeterminate = true; progressBar.startAnimation(nil) }
-        else { progressBar.isIndeterminate = false; progressBar.doubleValue = fraction }
+    /// The single point where a Core progress event becomes screen state.
+    /// Bar and label move together by construction, so a stage can no longer
+    /// update one and silently leave the other frozen.
+    private func apply(_ display: StageDisplay) {
+        progressBar.apply(display.bar)
+        setStatus(display.label)
     }
 
     // MARK: navigation
@@ -359,7 +357,7 @@ final class WizardWindowController: NSObject, NSWindowDelegate {
                 }
                 await MainActor.run {
                     self.prefixTracker = PrefixProgressTracker()
-                    self.setProgress(0)
+                    self.progressBar.apply(.determinate(0))
                     self.setStatus("Finishing the Windows environment (first time only)…")
                 }
                 try await Task.detached(priority: .userInitiated) {
@@ -383,27 +381,14 @@ final class WizardWindowController: NSObject, NSWindowDelegate {
     private var prefixTracker = PrefixProgressTracker()
 
     private func applyPrefixProgress(_ update: PrefixProgress) {
-        if let position = prefixTracker.position(for: update) { setProgress(position) }
-        setStatus(PrefixProgressTracker.detail(for: update))
+        apply(SetupDisplay.prefix(update, tracker: &prefixTracker))
     }
 
     private func applyEngineProgress(_ update: EngineProgress) {
-        switch update {
-        case .downloading(let f) where f >= 0:
-            setProgress(f)
-            setStatus("Downloading the Windows environment… \(Int(f * 100))%")
-        case .downloading:
-            setProgress(-1); setStatus("Downloading the Windows environment…")
-        case .verifying:
-            setProgress(-1); setStatus("Verifying the download…")
-        case .extracting:
-            setProgress(-1); setStatus("Unpacking the Windows environment…")
-        case .unpacking(let entries):
-            // No honest denominator for the archive, so the bar stays
-            // indeterminate and the count carries the movement.
-            setProgress(-1)
-            setStatus("Unpacking the Windows environment… \(entries) files")
-        }
+        // The engine being installed on this path is always the catalogue
+        // default; its measured entry count is what makes stage 3 determinate.
+        apply(SetupDisplay.engine(update,
+                                  unpackTotal: EngineCatalog.default.expectedUnpackEntries))
     }
 
     // MARK: Step 3 — Download & install NWS
@@ -507,8 +492,7 @@ final class WizardWindowController: NSObject, NSWindowDelegate {
     }
 
     private func nwsPrimary() {
-        setBusy(true, indeterminate: false)
-        setProgress(0)
+        setBusy(true, bar: .determinate(0))
         setStatus("Downloading New World Scheduler…")
 
         let nws = self.nws
@@ -527,10 +511,7 @@ final class WizardWindowController: NSObject, NSWindowDelegate {
                         Task { @MainActor [weak self] in self?.applyNWSProgress(p) }
                     }
                 }
-                await MainActor.run {
-                    self.setProgress(-1)
-                    self.setStatus("Installing New World Scheduler…")
-                }
+                await MainActor.run { self.apply(SetupDisplay.nws(.installing)) }
                 try await Task.detached(priority: .userInitiated) {
                     try await nws.install(installerAt: installer, log: log) { p in
                         Task { @MainActor [weak self] in self?.applyNWSProgress(p) }
@@ -557,17 +538,7 @@ final class WizardWindowController: NSObject, NSWindowDelegate {
     }
 
     private func applyNWSProgress(_ p: NWSProgress) {
-        switch p {
-        case .downloading(let f) where f >= 0:
-            setProgress(f)
-            setStatus("Downloading New World Scheduler… \(Int(f * 100))%")
-        case .downloading:
-            setProgress(-1); setStatus("Downloading New World Scheduler…")
-        case .installing:
-            setProgress(-1); setStatus("Installing New World Scheduler…")
-        case .verifying:
-            setProgress(-1); setStatus("Finishing installation…")
-        }
+        apply(SetupDisplay.nws(p))
     }
 
     // MARK: Step 4 — Done

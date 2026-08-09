@@ -51,6 +51,18 @@ Spec §7. Run before calling a build done. Record date and engine version.
 - [ ] Launching the same .exe again does not duplicate the launcher
 - [ ] Settings → Remove Generated Launchers deletes them all
 
+## Remove OpenXE (spec 2026-08-09)
+> Destructive and irreversible — run this **last**, and only when the machine's
+> state is expendable. Not the same as Reset Environment.
+- [ ] Settings → Remove OpenXE from this Mac… lists the engine, environment, logs, settings and each generated launcher, with a space figure
+- [ ] "Also delete my New World Scheduler information" is **unchecked** when the window opens
+- [ ] Leaving it unchecked: a "New World Scheduler Data (saved by OpenXE …)" folder appears in ~/Documents holding MyData, Backups, Settings1.json, RegistrationKey.json, the `.reg` file and README.txt
+- [ ] `~/Documents`, `~/Downloads` and `~/Desktop` are otherwise untouched — the prefix's symlinks were removed, not followed
+- [ ] `pgrep wineserver` shows nothing for the OpenXE prefix afterwards
+- [ ] `~/Library/Application Support/OpenXE`, `~/Library/Logs/OpenXE`, the preferences plist and the "OpenXE Apps" launchers are gone; non-OpenXE `.app`s in that folder survive
+- [ ] The window ends by saying OpenXE itself must be quit and dragged to the Trash, and offers Quit
+- [ ] Reinstall + re-setup, copy MyData/Backups back: congregation data loads, and the licence is still registered (same Mac account)
+
 ## Failure paths
 - [ ] A non-PE file renamed to `.exe` is refused with a plain-language explanation
 - [ ] An ARM64 Windows binary is refused with the ARM explanation

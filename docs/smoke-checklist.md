@@ -6,6 +6,23 @@ Spec §7. Run before calling a build done. Record date and engine version.
 - [ ] `scripts/build-app.sh` completes: builds, signs ad-hoc, stays under 5 MB, registers with LaunchServices
 - [ ] Fresh state (`make fresh`, i.e. `scripts/reset-fresh.sh` — preview with `make fresh ARGS=--dry-run`): first `.exe` launch shows the one-time setup progress window and completes
 
+## Progress display (HUMAN-ONLY — nothing automated can sign this off)
+> The automated suite covers the whole chain up to the control's state: bytes
+> arrive (`ProgressiveDownloadTests`), the download sites forward them
+> (`DownloadChainTests`), events map to a bar position (`SetupDisplayTests`),
+> and the position reaches `NSProgressIndicator` (`ProgressIndicatorTests`).
+> What no test can assert is whether those pixels actually move on screen:
+> off-screen readback of `NSProgressIndicator` reports no fill even for a
+> control known to be at 75 %, so any automated pixel check would be a fake
+> that passes regardless. A human watching a cold run is the only instrument.
+> A bar that sits still for a whole stage has shipped twice; check every stage.
+- [ ] Stage 2 (engine download): bar advances and the label counts up in %
+- [ ] Stage 3 (engine unpack): bar advances and the label counts files
+- [ ] Stage 4 (prefix boot): bar advances, never jumps backwards, label changes per sub-step
+- [ ] Stage 5 (NWS download): bar advances and the label counts up in %
+- [ ] Stage 6 (NWS install): bar is *animated* (indeterminate), not frozen, and shows no fake %
+- [ ] No stage leaves the bar and the label disagreeing (one moving, one stuck)
+
 ## Packaging (`make package-app`)
 - [ ] `make package-app` completes; app bundle under 5120 KB, both sizes reported
 - [ ] Double-clicking `dist/OpenXE.dmg` opens a window showing OpenXE beside an `Applications` shortcut

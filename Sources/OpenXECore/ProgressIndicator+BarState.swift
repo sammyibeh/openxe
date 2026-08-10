@@ -1,9 +1,18 @@
+#if canImport(AppKit)
 import AppKit
-import OpenXECore
 
 extension NSProgressIndicator {
 
     /// The one place `BarState` becomes pixels.
+    ///
+    /// This lives in Core rather than in the app target for one reason: the
+    /// test target links Core and cannot link an executable, so while this sat
+    /// next to the windows it was the last link in the progress chain that no
+    /// test could reach. Everything before it — byte counts, fractions, the
+    /// event→`StageDisplay` mapping — is covered; dropping `isIndeterminate =
+    /// false` here would freeze the bar exactly as the shipped defect did, and
+    /// nothing would have caught it. It imports no more than the app already
+    /// links, and AppKit is a system framework, so the size budget is unmoved.
     ///
     /// `stopAnimation(nil)` before switching to determinate is deliberate.
     /// AppKit's documented order is to stop the indeterminate animation before
@@ -19,7 +28,7 @@ extension NSProgressIndicator {
     /// the documented order rather than betting on an observation that could
     /// not be made, and the rendering itself remains verifiable only by a
     /// human watching a real run.
-    func apply(_ state: BarState) {
+    public func apply(_ state: BarState) {
         switch state {
         case .determinate(let fraction):
             stopAnimation(nil)
@@ -33,3 +42,4 @@ extension NSProgressIndicator {
         }
     }
 }
+#endif

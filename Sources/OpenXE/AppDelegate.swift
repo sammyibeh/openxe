@@ -121,9 +121,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         Task { @MainActor [weak self] in self?.progressWindow?.apply(update) }
                     }
                 }
-                progress.setIndeterminate(message: "Booting the Windows environment (first time only)…")
+                // Stage 4 emits real progress; this path was throwing it away
+                // and showing one static line for the whole prefix boot.
+                progress.beginDeterminate(
+                    message: "Booting the Windows environment (first time only)…")
                 try await Task.detached(priority: .userInitiated) {
-                    try prefixManager.ensurePrefix(log: log)
+                    try prefixManager.ensurePrefix(log: log) { update in
+                        Task { @MainActor [weak self] in self?.progressWindow?.apply(update) }
+                    }
                 }.value
                 self.progressWindow?.close()
                 self.progressWindow = nil

@@ -44,27 +44,33 @@ final class ProgressWindowController {
         window.makeKeyAndOrderFront(nil)
     }
 
+    /// Same mapping as the wizard, from the same place. This window used to
+    /// carry its own copy, which is how it ended up with a different set of
+    /// words for the same events and its own indeterminate `.unpacking`.
     func apply(_ update: EngineProgress) {
-        switch update {
-        case .downloading(let fraction) where fraction >= 0:
-            bar.isIndeterminate = false
-            bar.doubleValue = fraction
-            label.stringValue = "Downloading Windows engine… \(Int(fraction * 100))%"
-        case .downloading:
-            setIndeterminate(message: "Downloading Windows engine…")
-        case .verifying:
-            setIndeterminate(message: "Verifying download…")
-        case .extracting:
-            setIndeterminate(message: "Unpacking the Windows environment (about 700 MB)…")
-        case .unpacking(let entries):
-            setIndeterminate(message: "Unpacking the Windows environment… \(entries) files")
-        }
+        apply(SetupDisplay.engine(update,
+                                  unpackTotal: EngineCatalog.default.expectedUnpackEntries))
+    }
+
+    func apply(_ update: PrefixProgress) {
+        apply(SetupDisplay.prefix(update, tracker: &prefixTracker))
+    }
+
+    private var prefixTracker = PrefixProgressTracker()
+
+    private func apply(_ display: StageDisplay) {
+        bar.apply(display.bar)
+        label.stringValue = display.label
     }
 
     func setIndeterminate(message: String) {
-        bar.isIndeterminate = true
-        bar.startAnimation(nil)
-        label.stringValue = message
+        apply(StageDisplay(bar: .indeterminate, label: message))
+    }
+
+    /// Reset to a real zero when a new determinate stage begins, so the bar
+    /// does not start stage 4 sitting at stage 3's final position.
+    func beginDeterminate(message: String) {
+        apply(StageDisplay(bar: .determinate(0), label: message))
     }
 
     func close() {

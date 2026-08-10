@@ -56,6 +56,11 @@ final class ProgressWindowController {
         apply(SetupDisplay.prefix(update, tracker: &prefixTracker))
     }
 
+    /// Stage 4's never-rewind high-water mark. Deliberately per-window rather
+    /// than shared with the wizard: the two windows are never live at the same
+    /// time, and one tracker behind both would be global mutable state whose
+    /// only effect would be to let one run's high-water mark freeze the next
+    /// run's bar. `beginDeterminate` is what keeps it fresh.
     private var prefixTracker = PrefixProgressTracker()
 
     private func apply(_ display: StageDisplay) {
@@ -69,7 +74,16 @@ final class ProgressWindowController {
 
     /// Reset to a real zero when a new determinate stage begins, so the bar
     /// does not start stage 4 sitting at stage 3's final position.
+    ///
+    /// This resets the tracker too. Without it the window worked only because
+    /// `AppDelegate` happens to construct a fresh controller per run: a reused
+    /// controller would carry the previous run's high-water mark, every stage-4
+    /// event would map to `.unchanged`, and the bar would sit at 0 for the whole
+    /// prefix boot — a frozen bar with a green suite, again. The wizard already
+    /// resets explicitly at the same point; this makes the other window
+    /// correct by construction rather than by coincidence.
     func beginDeterminate(message: String) {
+        prefixTracker = PrefixProgressTracker()
         apply(StageDisplay(bar: .determinate(0), label: message))
     }
 

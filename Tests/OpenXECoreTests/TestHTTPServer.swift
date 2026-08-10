@@ -15,6 +15,7 @@ final class TestHTTPServer: @unchecked Sendable {
 
     let port: UInt16
     private let listenFD: Int32
+    private let body: [UInt8]?
     private let totalBytes: Int
     private let chunkSize: Int
     private let microsecondsPerChunk: UInt32
@@ -23,17 +24,23 @@ final class TestHTTPServer: @unchecked Sendable {
     private var isStopped = false
 
     /// - Parameters:
-    ///   - totalBytes: body size.
+    ///   - body: the exact bytes to serve. Nil serves `totalBytes` of filler —
+    ///     enough for a progress test, but the engine/NWS chain tests need a
+    ///     real archive on the wire so the checksum and size gates run for
+    ///     real rather than being stubbed out.
+    ///   - totalBytes: body size when `body` is nil.
     ///   - chunkSize: bytes per `write`, so progress arrives in steps.
     ///   - microsecondsPerChunk: pacing, so a transfer is not over before the
     ///     first callback can land.
     ///   - announceLength: false omits Content-Length, which is how a real
     ///     server produces the "no honest denominator" case.
-    init(totalBytes: Int = 512 * 1024,
+    init(body: Data? = nil,
+         totalBytes: Int = 512 * 1024,
          chunkSize: Int = 16 * 1024,
          microsecondsPerChunk: UInt32 = 4_000,
          announceLength: Bool = true) throws {
-        self.totalBytes = totalBytes
+        self.body = body.map { [UInt8]($0) }
+        self.totalBytes = body?.count ?? totalBytes
         self.chunkSize = chunkSize
         self.microsecondsPerChunk = microsecondsPerChunk
         self.announceLength = announceLength
@@ -125,11 +132,12 @@ final class TestHTTPServer: @unchecked Sendable {
         }
         guard writeAll(client, Array(header.utf8)) else { return }
 
-        let chunk = [UInt8](repeating: 0x78, count: chunkSize)
+        let filler = [UInt8](repeating: 0x78, count: chunkSize)
         var sent = 0
         while sent < totalBytes, !shouldStop {
             let n = min(chunkSize, totalBytes - sent)
-            guard writeAll(client, Array(chunk[0..<n])) else { return }
+            let slice = body.map { Array($0[sent..<(sent + n)]) } ?? Array(filler[0..<n])
+            guard writeAll(client, slice) else { return }
             sent += n
             usleep(microsecondsPerChunk)
         }
